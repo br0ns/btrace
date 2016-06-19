@@ -6,7 +6,6 @@ import traceback
 from types import MethodType, FunctionType
 from collections import defaultdict
 
-from . import callback
 from .ptrace   import *
 from .signals  import *
 from .syscalls import *
@@ -15,7 +14,7 @@ from .tracee   import Tracee
 
 _log = logging.getLogger(__name__)
 
-class Engine(callback.CallbackMixin):
+class Engine(object):
     '''The btrace tracing engine.
 
     Events:
