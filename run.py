@@ -17,6 +17,9 @@ class Tracer(object):
     #         args[2] = 4
     #     print 'syscall', name
 
+    def on_repid(self, tracee, oldpid):
+        print tracee, 'changed pid from %d to %d' % (oldpid, tracee.pid)
+
     def on_write(self, tracee, args):
         # print 'write(%d, 0x%x, %d)' % (args[0], args[1], args[2])
         # print 'emulating write, would have printed "%s"' % string_at(args[1])

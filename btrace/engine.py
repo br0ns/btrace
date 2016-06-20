@@ -84,6 +84,7 @@ class Engine(object):
                 pid, status = self._wait()
             except OSError as e:
                 if e.errno == errno.ECHILD:
+                    # This may happen if all the tracees are killed by SIGKILL.
                     _log.debug('no tracees, exiting')
                     break
                 raise
@@ -99,23 +100,6 @@ class Engine(object):
                 (_log.warn if self.follow else _log.debug)(
                     '<PID:%d> is not a tracee' % pid)
                 continue
-
-            # print 'rdi', hex(tracee.regs.rdi)
-            # print 'rsi', hex(tracee.regs.rsi)
-            # print 'rdx', hex(tracee.regs.rdx)
-            # print 'rcx', hex(tracee.regs.rcx)
-            # print 'rax', hex(tracee.regs.rax)
-            # print 'r8', hex(tracee.regs.r8)
-            # print 'r9', hex(tracee.regs.r9)
-            # print 'r10', hex(tracee.regs.r10)
-            # print 'r11', hex(tracee.regs.r11)
-            # print 'rbx', hex(tracee.regs.rbx)
-            # print 'rbp', hex(tracee.regs.rbp)
-            # print 'r12', hex(tracee.regs.r12)
-            # print 'r13', hex(tracee.regs.r13)
-            # print 'r14', hex(tracee.regs.r14)
-            # print 'r15', hex(tracee.regs.r15)
-            # print 'orig_rax', hex(tracee.regs.orig_rax)
 
             # Figure out what happened to the tracee
             s = os.WSTOPSIG(status)
@@ -378,8 +362,14 @@ class Engine(object):
             # executes execve, all other threads in the thread group die and the
             # execve'ing thread becomes leader
             elif event == PTRACE_EVENT_EXEC:
-                # TODO: write this
-                pass
+                oldpid = ptrace_geteventmsg(pid)
+                if pid != oldpid:
+                    # Neither this tracee nor the thread group leader will
+                    # report death, so we must do the clean-up here
+                    tracee = self.tracees.pop(oldpid)
+                    tracee.pid = pid
+                    self.tracees[pid] = tracee
+                    self._run_callbacks('repid', tracee, oldpid)
 
             # Tracee exited or was killed by a signal, so remove it.  No need to
             # report this exit as we have already done so when we got
