@@ -1,6 +1,6 @@
 from . import ptrace
 
-class Signal(object):
+class Siginfo(object):
     _fields = dict(ptrace.regs_t._fields_).keys()
 
     def __init__(self, tracee):
@@ -29,11 +29,3 @@ class Signal(object):
 
     def __getattr__(self, k):
         return getattr(self._siginfo, k)
-
-    @property
-    def nr(self):
-        return self._siginfo.si_signo
-
-    @nr.setter
-    def nr(self, v):
-        self.si_signo = v

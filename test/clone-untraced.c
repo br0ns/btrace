@@ -9,13 +9,11 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 
+#include "util.c"
+
 int clone(int (*fn)(void *), void *child_stack,
           int flags, void *arg, ...
           /* pid_t *ptid, struct user_desc *tls, pid_t *ctid */ );
-
-pid_t gettid(void) {
-  return syscall(SYS_gettid);
-}
 
 int thread(void *arg) {
   printf("Thread: PID = %d, TID = %d\n", getpid(), gettid());

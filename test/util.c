@@ -1,7 +1,9 @@
 #include <stdlib.h>
+#include <unistd.h>
 #include <linux/sched.h>
 #include <syscall.h>
 #include <signal.h>
+#include <sys/syscall.h>
 
 /* Code after example by Linus:
  *   http://www.tldp.org/FAQ/Threads-FAQ/clone.c
@@ -70,4 +72,8 @@ pid_t start_thread(void (*fn)(void), void *newstack) {
 #endif
 
   return res;
+}
+
+pid_t gettid(void) {
+  return syscall(SYS_gettid);
 }

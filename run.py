@@ -18,7 +18,8 @@ class Tracer(object):
     #     print 'syscall', name
 
     def on_repid(self, tracee, oldpid):
-        print tracee, 'changed pid from %d to %d' % (oldpid, tracee.pid)
+        pass
+        # print tracee, 'changed pid from %d to %d' % (oldpid, tracee.pid)
 
     def on_write(self, tracee, args):
         # print 'write(%d, 0x%x, %d)' % (args[0], args[1], args[2])
@@ -47,6 +48,14 @@ class Tracer(object):
     def on_signal(self, tracee, signal):
         print 'signal', signal.signo, signal.errno, signal.code, \
             signal.pid, signal.uid
+
+    def on_syscall(self, tracee, *_):
+        print 'TGID = %r, TID = %r, PPID = %r' % \
+            (tracee.tgid, tracee.tid, tracee.ppid)
+        print 'TG = {%s}' % ', '.join(str(t.pid) for t in tracee.thread_group)
+
+    def on_personality_change(self, tracee, _):
+        print '[Running in %dbit mode]' % (tracee.wordsize * 8)
 
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '-v':

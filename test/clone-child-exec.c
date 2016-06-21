@@ -8,6 +8,7 @@
 #include "util.c"
 
 void thread1(void) {
+  printf("TGID = %d, TID = %d\n", getpid(), gettid());
   for (;;);
 
 }
