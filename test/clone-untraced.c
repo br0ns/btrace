@@ -16,7 +16,8 @@ int clone(int (*fn)(void *), void *child_stack,
           /* pid_t *ptid, struct user_desc *tls, pid_t *ctid */ );
 
 int thread(void *arg) {
-  printf("Thread: PID = %d, TID = %d\n", getpid(), gettid());
+  printf("Thread: PID = %d, TID = %d, PPID = %d\n",
+         getpid(), gettid(), getppid());
   printf("I got: %s\n", arg);
   return 0;
 }
@@ -28,10 +29,11 @@ int main(int argc, char *argv[]) {
   pid_t pid;
 
   newstack = (void*)(stack + sizeof(stack) - sizeof(long));
-  printf("Leader: PID = %d, TID = %d\n", getpid(), gettid());
+  printf("Leader: PID = %d, TID = %d, PPID = %d\n",
+         getpid(), gettid(), getppid());
   pid = clone(thread, newstack,
-              /* CLONE_VM | CLONE_SIGHAND | CLONE_THREAD | CLONE_UNTRACED, */
-              CLONE_VM | CLONE_SIGHAND | CLONE_THREAD,
+              CLONE_VM | CLONE_SIGHAND | CLONE_THREAD | CLONE_UNTRACED,
+              /* CLONE_VM | CLONE_SIGHAND | CLONE_THREAD, */
               "foobar");
   for (;;) sleep(1);
 }

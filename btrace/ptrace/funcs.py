@@ -55,6 +55,9 @@ def ptrace_cont(pid, sig=0):
 def ptrace_syscall(pid, sig=0):
     ptrace(PTRACE_SYSCALL, pid, 0, sig)
 
+def ptrace_singlestep(pid, sig=0):
+    ptrace(PTRACE_SINGLESTEP, pid, 0, sig)
+
 def ptrace_sysemu(pid, sig=0):
     ptrace(PTRACE_SYSEMU, pid, 0, sig)
 

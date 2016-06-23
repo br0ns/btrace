@@ -1,7 +1,9 @@
 CC=gcc
 
 TARGETS=                 \
+  99forks                \
   clone-child-exec       \
+  clone-untraced         \
   exec                   \
   exec-failed            \
   exit42                 \
@@ -12,13 +14,13 @@ TARGETS=                 \
   infloop-sleep          \
   kill                   \
   mmap                   \
+  siginfo                \
+  sigkill                \
+  sigsegv                \
+  sigterm                \
+  sigwinch               \
   term                   \
   trap                   \
-  sigsegv                \
-  sigwinch               \
-  sigterm                \
-  sigkill                \
-  clone-untraced         \
 
 TARGETS:=$(patsubst %, %.i386, $(TARGETS)) \
          $(patsubst %, %.amd64, $(TARGETS))

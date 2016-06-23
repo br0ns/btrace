@@ -23,6 +23,8 @@ class Tracee:
             self.parent = parent
 
         self.ppid = self.parent.pid if self.parent else None
+        # The personality is set when we seize the process; see `Engine`
+        self.personality = None
 
         if clone_flags & CLONE_THREAD:
             self.tgid = parent.tgid
@@ -36,7 +38,6 @@ class Tracee:
         self.mem = Memory(self)
         self.syscall = Syscall(self)
         self.siginfo = Siginfo(self)
-        self.personality = 0
 
         self._waiting_for_interrupt = False
         self._waiting_for_initial_stop = True
