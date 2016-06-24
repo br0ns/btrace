@@ -358,6 +358,11 @@ SYS_sendmmsg               = 345
 SYS_setns                  = 346
 SYS_process_vm_readv       = 347
 SYS_process_vm_writev      = 348
+SYS_kcmp                   = 349
+SYS_finit_module           = 350
+SYS_sched_setattr          = 351
+SYS_sched_getattr          = 352
+SYS_renameat2              = 353
 
 syscall_names = {
       0 : 'restart_syscall',
@@ -709,4 +714,9 @@ syscall_names = {
     346 : 'setns',
     347 : 'process_vm_readv',
     348 : 'process_vm_writev',
+    349 : 'kcmp',
+    350 : 'finit_module',
+    351 : 'sched_setattr',
+    352 : 'sched_getattr',
+    353 : 'renameat2',
 }
