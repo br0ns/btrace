@@ -123,19 +123,90 @@ class Engine(object):
             cbs.pop(func, None)
 
     def _run(self, pid):
-        self._new_tracee(pid)
+        # TODO: this
+        # This is the entry point after running either `start` or `attach`.  In both
 
-        # We save the flags argument to clone syscalls, because we need it to
-        # decide the parent and thread group of newly spawned processes and
-        # threads
+        # The initial tracee is the only tracee that may stop for other reasons
+        # before `PTRACE_EVENT_STOP`, so we handle it specially here.  If the
+        # tracee was created with `Engine.start` then it will stop itself with
+        # `SIGSTOP`, in which case we will observe group-stop.  But
+        # `WPTRACEEVENT(status) will also be `PTRACE_EVENT_STOP` in that case,
+        # so there's no reason to distinguish between them.
+        while True:
+            pid_, status = self._wait()
+            if pid != pid_:
+                _log.debug('child <PID:%d> is not initial tracee' % pid_)
+                continue
+
+            e = WPTRACEEVENT(status)
+            s = os.WSTOPSIG(status)
+            if os.WIFSTOPPED(status) and e == PTRACE_EVENT_STOP:
+                _log.debug('seized initial tracee <PID:%d>' % pid)
+                self._new_tracee(pid)
+                break
+
+            _log.debug('still waiting for <PID:%d>' % pid)
+            # If this is not group-stop (`e` != 0 and `s` != `SIGTRAP`),
+            # event-stop (`e` != 0 and `s` == `SIGTRAP`) or syscall-stop (`s` &
+            # 0x80), then it must be signal-stop.
+            if not e and not s & 0x80:
+                cont_signal = s
+            else:
+                cont_signal = 0
+
+            ptrace_cont(pid, cont_signal)
+            continue
+
+        # For a child to become a tracee two things must happen: 1)
+        # `PTRACE_EVENT_STOP` is observed in the child and 2)
+        # `PTRACE_EVENT_{FORK,VFORK,CLONE}`is observed in the parent.  The first
+        # condition ensures that the tracee is running and the second lets us
+        # know the parent.
+        #
+        # In the case of the `clone` syscall we must also save the flags used,
+        # as they decide the thread group and parent of the child.
+        #
+        # Caveat: I have only seen `PTRACE_EVENT_STOP` before
+        #   `PTRACE_EVENT_{FORK,VFORK,CLONE}` in the case of `vfork`, and not
+        #   consistently, but the ptrace man page doesn't say anything about the
+        #   order.  Besides, there's no reason to rely on it anyway.
+
+        # `stop_seen` records the children in whom we have observed
+        # `PTRACE_EVENT_STOP`.
+        stop_seen = set()
+
+        # `parent_seen` maps children to their "parents".  Here parent refers to
+        # the process that spawned the child, not the childs parent as reported
+        # by `getppid`.
+        parent_seen = {}
+
+        # `clone_flags` maps parents to the flags used in the `clone` syscall.
+        # When `clone` is called the PID of the child is not yet known, so the
+        # mapping cannot be from children.
         clone_flags = {}
 
-        while self.tracees:
+        # This function creates a tracee if the conditions discussed above are
+        # met.
+        def maybe_tracee(pid):
+            if pid not in stop_seen:
+                _log.debug('PTRACE_EVENT_STOP has not yet been observed in '
+                           '<PID:%d>' % pid)
+                return
+            if pid not in parent_seen:
+                _log.debug('parent of <PID:%d> has not yet observed '
+                           'PTRACE_EVENT_{FORK,VFORK,CLONE}' % pid)
+                return
+            parent = parent_seen.pop(pid)
+            cflags = clone_flags.pop(parent.pid, 0)
+            self._new_tracee(pid, parent, cflags)
+
+        while True:
             try:
                 pid, status = self._wait()
             except OSError as e:
                 if e.errno == errno.ECHILD:
-                    # This may happen if all the tracees are killed by SIGKILL.
+                    # This may happen if all the tracees are killed by SIGKILL,
+                    # so we didn't get a change to observe their death.
                     _log.debug('no tracees, exiting')
                     break
                 raise
@@ -146,46 +217,38 @@ class Engine(object):
                         (status >> 8) & 0xff,
                         status & 0xff))
 
-            tracee = self.tracees.get(pid)
-            if not tracee:
-                _log.debug('child <PID:%d> is not a tracee' % pid)
+            if pid not in self.tracees:
+                # The child is not a tracee.  That can happen because 1) it was
+                # created with follow mode disabled, and is not meant to be a
+                # tracee, or 2) this is the first time we see the tracee in
+                # which case we expect observe `PTRACE_EVENT_STOP`
+
+                # According to the `wait(2)` man page `WIFSTOPPED(status)` can
+                # only be true if `wait` was called with `UNTRACED` or if the
+                # child is a ptrace tracee.  In the second case we must observe
+                # `PTRACE_EVENT_STOP`.
+                #
+                if os.WIFSTOPPED(status):
+                    assert WPTRACEEVENT(status) == PTRACE_EVENT_STOP, \
+                        'non-tracee child stopped without PTRACE_EVENT_STOP'
+                    assert pid not in stop_seen, \
+                        'already saw PTRACE_EVENT_STOP for child <PID:%d>' % pid
+                    stop_seen.add(pid)
+                    # Create and start tracee if we already know the parent
+                    maybe_tracee(pid)
                 continue
 
-            # Figure out what happened to the tracee
+            # OK, this is a proper tracee, continue to the real logic.  First we
+            # figure out what happened to it.
+            tracee = self.tracees.get(pid)
+
             s = os.WSTOPSIG(status)
             e = WPTRACEEVENT(status)
 
             # When we continue the tracee, this is the signal we should send it
             cont_signal = 0
 
-            # We are still awaiting the initial stopping of this tracee.  If the
-            # tracee was started by btrace it will stop itself and we will
-            # observe group-stop, otherwise we will interrupt it or it will
-            # automatically stop due to PTRACE_O_{CLONE,FORK,VFORK} and we will
-            # observe PTRACE_EVENT_STOP.  In all three cases
-            # WPTRACEEVENT(status) will be PTRACE_EVENT_STOP, so we don't need
-            # to distinguish between them.
-            if tracee._waiting_for_initial_stop:
-                if os.WIFSTOPPED(status) and e == PTRACE_EVENT_STOP:
-                    _log.debug('seized <PID:%d>' % pid)
-                    # We seized the tracee, yay
-                    tracee._waiting_for_initial_stop = False
-                    tracee.personality = personality(tracee)
-                    ptrace_syscall(pid, 0)
-                    continue
-
-                _log.debug('still waiting for <PID:%d>' % pid)
-                # If this is not group-stop, event-stop or syscall-stop, then it
-                # must be signal-stop
-                if not e and not s & 0x80:
-                    cont_signal = s
-
-                ptrace_cont(pid, cont_signal)
-                continue
-
-            # OK, this is a proper tracee, continue to the real logic
-
-            # Why did wait() return this tracee?
+            # Why did `wait` return this tracee?
             stopped   = False
             signalled = False
             continued = False
@@ -291,21 +354,21 @@ class Engine(object):
 
             # Tracee exited or was killed by a signal, so remove it.  No need to
             # report this exit as we have already done so when we got
-            # PTRACE_EVENT_EXIT
+            # `PTRACE_EVENT_EXIT`.
             # Caveat: At the moment (kernel 4.5.0) tracees stop in event-stop
-            #   with PTRACE_EVENT_EXIT even if they are killed by SIGKILL.
+            #   with `PTRACE_EVENT_EXIT` even if they are killed by `SIGKILL`.
             #   According to the man page that may change in the future.  We
             #   handle that hypothetical situation below, if ptrace fails with
-            #   ESRCH when we continue the tracee
+            #   `ESRCH` when we continue the tracee
             if exited or signalled:
                 self._del_tracee(tracee)
                 continue
 
-            # Handle exec's: when a thread which is not the thread group leader
-            # executes execve, all other threads in the thread group die and the
-            # execve'ing thread becomes leader.  This code must be executed
-            # early as `tracee` is in fact the wrong tracee at this point, and
-            # we need to correct that.
+            # Handle `execve`'s: when a thread which is not the thread group
+            # leader executes `execve`, all other threads in the thread group
+            # die and the `execve`'ing thread becomes leader.  This code must be
+            # executed early as `tracee` is in fact the wrong tracee at this
+            # point, and we need to correct that.
             if event == PTRACE_EVENT_EXEC:
                 oldpid = ptrace_geteventmsg(pid)
                 if pid != oldpid:
@@ -324,7 +387,7 @@ class Engine(object):
                 tracee.is_running = True
                 self._run_callbacks('cont', tracee)
 
-            # See if the tracee changed personality
+            # See if the tracee changed personality.
             cur_pers = personality(tracee)
             if cur_pers != tracee.personality:
                 old_pers = tracee.personality
@@ -333,11 +396,11 @@ class Engine(object):
                 tracee.personality = cur_pers
                 self._run_callbacks('personality_change', tracee, old_pers)
 
-            # Handle syscall-enter and syscall-exit
+            # Handle syscall-enter and syscall-exit.
             if syscall_stop:
                 # On syscall-stop in_syscall will never be set; the idea is that
                 # syscall-enter happens strictly before the tracee enters the
-                # syscall and syscall-exit strictly after
+                # syscall and syscall-exit strictly after.
                 if tracee.in_syscall:
                     tracee.in_syscall = False
 
@@ -348,7 +411,7 @@ class Engine(object):
                                               tracee, retval)
 
                     # Reset after callbacks have run so they can see if the
-                    # syscall was emulated
+                    # syscall was emulated.
                     tracee.syscall.emulated = False
 
                 else:
@@ -358,9 +421,7 @@ class Engine(object):
                           self._run_callbacks(syscall.name, tracee, args)
                     tracee.in_syscall = True
 
-                # Collect return values
-                # XXX: Decide what to do about tracers that write directly to
-                # XXX: the syscall object
+                # Collect return value override(s).
                 ret_ = []
                 for f, r in ret:
                     bits = tracee.wordsize * 8
@@ -385,27 +446,27 @@ class Engine(object):
                                   _funcdesc(func))
 
                     # We were supposed to enter a syscall, but a tracer returned
-                    # a value, so we'll "emulate" the syscall instead
+                    # a value, so we'll "emulate" the syscall instead.
                     if tracee.in_syscall:
                         _log.debug('emulating syscall <%d:%s> -> 0x%x' % \
                                    (syscall.nr, syscall.name, retval))
 
-                        # XXX: For some reason ptrace_sysemu doesn't seem to
+                        # XXX: For some reason `ptrace_sysemu` doesn't seem to
                         # XXX: work for me, so I replace the syscall with a
-                        # XXX: "nop" syscall in the form of getpid
-                        tracee.syscall.name = 'getpid'
+                        # XXX: "nop" syscall in the form of `getpid`
                         tracee.syscall.emulated = True
                         tracee.syscall.emu_nr = syscall.nr
                         tracee.syscall.emu_retval = retval
+                        tracee.syscall.name = 'getpid'
 
-                    # The syscall return value was overridden by a tracer
+                    # The syscall return value was overridden by a tracer.
                     else:
                         tracee.syscall.retval = retval
                         _log.debug('overriding retval <%d:%s> -> 0x%x' % \
                                    (syscall.nr, syscall.name, retval))
 
-                # We are about to enter an un-emulated clone syscall and we want
-                # to follow the child.  We must save the flags used in the
+                # We are about to enter an un-emulated `clone` syscall and we
+                # want to follow the child.  We must save the flags used in the
                 # syscall so we can correctly set the parent and thread group of
                 # the newly created process/thread when it arrives.  Also, if
                 # the `CLONE_UNTRACED` flag is set, we unset it so we become a
@@ -423,16 +484,16 @@ class Engine(object):
                         syscall.args[0] &= ~CLONE_UNTRACED
                         _log.debug('removed CLONE_UNTRACED in clone syscall')
 
-            # Run callbacks signals and single stepping
+            # Run callbacks for signals and single stepping.
             elif signal_stop:
-                # If we are single stepping and received a SIGTRAP, we interpret
-                # that as a step
+                # If we are single stepping and received a `SIGTRAP`, we
+                # interpret that as a step.
                 if self.singlestep and siginfo.signo == SIGTRAP:
-                    _log.debug('singlestep')
+                    _log.debug('step')
                     self._run_callbacks('step', tracee, siginfo)
 
                 else:
-                    # Collect signal number overrides
+                    # Collect signal number overrides.
                     ret = self._run_callbacks('signal', tracee, siginfo)
                     if ret:
                         func, signo = ret[-1]
@@ -443,35 +504,45 @@ class Engine(object):
                         # Override signal
                         cont_signal = signo
 
-            # Ditto for group-stops
+            # Ditto for group-stops.
             elif group_stop:
                 tracee.is_running = False
                 self._run_callbacks('stop', tracee)
 
-            # Handle births
+            # Handle births.
             elif event in PTRACE_EVENTS_FOLLOW:
                 newpid = ptrace_geteventmsg(pid)
-                assert pid in clone_flags, \
-                    'got PTRACE_EVENT_{FORK,VFORK,CLONE} but a previous ' \
-                    'clone syscall was never observed'
-                self._new_tracee(newpid, tracee, clone_flags.pop(pid))
 
-            # Handle deaths
+                # Even if the child is not the result of a `clone` syscall, we
+                # may have saved clone flags if a previous `clone` failed.  In
+                # that case we must remove the stale flags.
+                if event != PTRACE_EVENT_CLONE:
+                    clone_flags.pop(pid, None)
+
+                # Record this tracee as the parent.
+                parent_seen[newpid] = tracee
+
+                # And finally create and start the new tracee if
+                # `PTRACE_EVENT_STOP` was already seen (as mentioned above, I've
+                # only seen this behaviour from `vfork`).
+                maybe_tracee(newpid)
+
+            # Handle deaths.
             elif event == PTRACE_EVENT_EXIT:
                 status = ptrace_geteventmsg(pid)
                 self._run_callbacks('death', tracee, status)
 
-            # Write-back and reset register, memory and siginfo caches
+            # Write-back and reset register, memory and siginfo caches.
             tracee._writeback()
 
-            # Continue the tracee
+            # Continue the tracee.
             try:
                 if group_stop:
                     _log.debug('<PID:%d> stopped, calling ptrace_listen' % \
                                pid)
                     ptrace_listen(pid)
                 elif sysemu:
-                    # XXX: See comments about ptrace_sysemu above
+                    # XXX: See comments about `ptrace_sysemu` above.
                     ptrace_sysemu(pid, cont_signal)
                 elif self.singlestep:
                     ptrace_singlestep(pid, cont_signal)
@@ -528,14 +599,16 @@ class Engine(object):
         return out
 
     def _new_tracee(self, pid, parent=None, clone_flags=0):
+        _log.debug('new tracee, <PID:%d>' % pid)
         tracee = Tracee(pid, parent, clone_flags)
         assert pid not in self.tracees, \
             '<PID:%d> is already a tracee' % pid
         self.tracees[pid] = tracee
         self._run_callbacks('birth', tracee)
+        ptrace_syscall(pid, 0)
 
     def _del_tracee(self, tracee):
         assert tracee in tracee.thread_group, \
-            'tracee is not i its own thread group'
+            'tracee <PID:%d> is not i its own thread group' % tracee.pid
         tracee.thread_group.remove(tracee)
         del self.tracees[tracee.pid]

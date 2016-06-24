@@ -2,7 +2,7 @@ from .registers import Registers
 from .memory import Memory
 from .syscall import Syscall
 from .siginfo import Siginfo
-from .personality import WORDSIZE, SYSCALLS
+from .personality import WORDSIZE, SYSCALLS, personality
 
 from .thread_group import ThreadGroup
 from .ptrace import ptrace_interrupt
@@ -23,8 +23,6 @@ class Tracee:
             self.parent = parent
 
         self.ppid = self.parent.pid if self.parent else None
-        # The personality is set when we seize the process; see `Engine`
-        self.personality = None
 
         if clone_flags & CLONE_THREAD:
             self.tgid = parent.tgid
@@ -40,7 +38,8 @@ class Tracee:
         self.siginfo = Siginfo(self)
 
         self._waiting_for_interrupt = False
-        self._waiting_for_initial_stop = True
+
+        self.personality = personality(self)
 
     @property
     def tid(self):
