@@ -68,6 +68,17 @@ class Tracer1(object):
             s = s.replace('parent', 'PARENT')
             tracee.mem.put_cstring(args[1], s)
 
+    child = None
+    tracees = 0
+    def on_birth(self, tracee):
+        self.tracees += 1
+        if self.tracees == 2:
+            self.child = tracee
+
+    def on_fstat_return(self, tracee, _):
+        if tracee == self.child:
+            tracee.detach()
+
     # def on_read_return(self, *_):
     #     if self.expect_read:
     #         return 0
@@ -130,9 +141,9 @@ if __name__ == '__main__':
         print 'usage: %s [-v] <program> [<arg> [<arg> ...]]' % sys.argv[0]
         exit(-1)
 
-    # tracer = Tracer1()
-    tracer = Tracer2()
-    engine = Engine(tracers = [], trace_restart=True)
+    tracer = Tracer1()
+    # tracer = Tracer2()
+    engine = Engine(tracers = [tracer], trace_restart=True)
     # engine.follow = False
 
     prog = sys.argv[1]

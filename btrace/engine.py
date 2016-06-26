@@ -5,19 +5,27 @@ import errno
 import logging
 import traceback
 import types
+import ctypes
 
 from collections import defaultdict
 
 from .ptrace      import *
-from .syscalls    import *
-from .info        import *
 from .tracee      import Tracee
 from .personality import personality
-from .signals     import SIGSTOP, SIGTRAP
+from .signals     import SIGSTOP, SIGCONT, SIGTRAP
+# These are the tracer's syscalls, not the tracee's.
+from .info        import SYSCALLS
 
 _log = logging.getLogger(__name__)
 _debug = _log.debug
 
+# Python (or libc for that matter) does not expose the `tgkill` syscall, so we
+# must create it ourselves.
+_libc = ctypes.CDLL(ctypes.util.find_library('c'))
+def _tgkill(tgid, tid, sig):
+    _libc.syscall(SYSCALLS.SYS_tgkill, tgid, tid, sig)
+
+# Utility function that returns a functions' name.
 def _funcdesc(f):
     '''Internal utility function'''
     if isinstance(f, types.MethodType):
@@ -51,11 +59,10 @@ ERESTARTNOINTR        = 0x201
 ERESTARTNOHAND        = 0x202
 ERESTART_RESTARTBLOCK = 0x204
 RETVAL_RESTART = (
-    ERESTARTSYS,
-    ERESTARTNOINTR,
-    ERESTARTNOHAND,
-    ERESTART_RESTARTBLOCK)
-
+    -ERESTARTSYS,
+    -ERESTARTNOINTR,
+    -ERESTARTNOHAND,
+    -ERESTART_RESTARTBLOCK)
 
 class Engine(object):
     '''The btrace tracing engine.
@@ -230,14 +237,14 @@ class Engine(object):
             cflags = clone_flags.pop(parent.pid, 0)
             self._new_tracee(pid, parent, cflags)
 
-        while True:
+        while self.tracees or True:
             try:
                 pid, status = self._wait()
             except OSError as e:
                 if e.errno == errno.ECHILD:
                     # This may happen if all the tracees are killed by SIGKILL,
                     # so we didn't get a change to observe their death.
-                    _debug('no tracees, exiting')
+                    _debug('no children, exiting')
                     break
                 raise
 
@@ -370,6 +377,8 @@ class Engine(object):
                     # This is the correct tracee, it just changed its pid
                     tracee = self.tracees.pop(oldpid)
                     tracee.pid = pid
+                    tracee.thread_group = set([tracee])
+                    tracee.tgid = tracee.pid
                     self.tracees[pid] = tracee
                     self._run_callbacks('repid', tracee, oldpid)
 
@@ -463,7 +472,7 @@ class Engine(object):
                     tracee.in_syscall = False
 
                     if self.trace_restart or \
-                       -syscall.retval & 0x3ff not in RETVAL_RESTART:
+                       syscall.retval not in RETVAL_RESTART:
                         # Finalize syscall object, i.e. stop the timer.
                         syscall._fini()
 
@@ -528,6 +537,8 @@ class Engine(object):
             # Handle deaths.
             elif event == PTRACE_EVENT_EXIT:
                 status = ptrace_geteventmsg(pid)
+                tracee.is_running = False
+                tracee.is_alive = False
                 self._run_callbacks('death', tracee, status)
 
             # Write-back and reset register, memory and siginfo caches.
@@ -541,13 +552,16 @@ class Engine(object):
                     # XXX: See comments about `ptrace_sysemu` above.
                     ptrace_sysemu(pid, cont_signal)
                 elif tracee._do_detach:
-                    # TODO: implement
-                    pass
+                    _debug('detached <PID:%d>' % pid)
+                    ptrace_detach(pid, cont_signal)
+                    # Continue the tracee.
+                    _tgkill(tracee.tgid, tracee.tid, SIGCONT)
                 elif self.singlestep:
                     ptrace_singlestep(pid, cont_signal)
                 else:
                     ptrace_syscall(pid, cont_signal)
             except OSError as e:
+                raise
                 if e.errno == errno.ESRCH:
                     # This doesn't happen at the moment (kernel 4.5.0), but it
                     # may in the future.  See the BUGS section in the ptrace man

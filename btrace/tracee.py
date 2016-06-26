@@ -16,6 +16,7 @@ class Tracee:
 
         self.in_syscall = False
         self.is_running = True
+        self.is_alive   = True
 
         # Set parent and parent pid
         if clone_flags & CLONE_THREAD or clone_flags & CLONE_PARENT:

@@ -1,6 +1,10 @@
 import time
 
-from .info import REG_SP
+from .info import REG_SP, WORDSIZE
+
+_sbit = 1 << (WORDSIZE - 1)
+_smin = -(1 << WORDSIZE)
+_mask = (1 << WORDSIZE) - 1
 
 class _RW(object):
     def _read(self, (typ, loc)):
@@ -69,8 +73,11 @@ class Syscall(_RW):
 
     @property
     def retval(self):
-        return self._read(self._tracee.syscalls.RETVAL)
+        r = self._read(self._tracee.syscalls.RETVAL)
+        if r & _sbit:
+            r += _smin
+        return r
 
     @retval.setter
     def retval(self, val):
-        self._write(self._tracee.syscalls.RETVAL, val)
+        self._write(self._tracee.syscalls.RETVAL, val & _mask)
