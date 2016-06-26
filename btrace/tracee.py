@@ -17,13 +17,14 @@ class Tracee:
         self.in_syscall = False
         self.is_running = True
 
+        # Set parent and parent pid
         if clone_flags & CLONE_THREAD or clone_flags & CLONE_PARENT:
             self.parent = parent.parent
         else:
             self.parent = parent
-
         self.ppid = self.parent.pid if self.parent else None
 
+        # Set thread group
         if clone_flags & CLONE_THREAD:
             self.tgid = parent.tgid
             self.thread_group = parent.thread_group
@@ -38,8 +39,18 @@ class Tracee:
         self.siginfo = Siginfo(self)
 
         self._waiting_for_interrupt = False
+        self._do_detach = False
 
+        # We set the personality last as we may need to read from registers
+        # and/or memory.
         self.personality = personality(self)
+
+        # Since detecting the personality may have saturated the register/memory
+        # caches we need to flush them.
+        self._cacheflush()
+
+    def detach(self):
+        self._do_detach = True
 
     @property
     def tid(self):
@@ -54,10 +65,10 @@ class Tracee:
     def syscalls(self):
         return SYSCALLS[self.personality]
 
-    def _writeback(self):
-        self.regs._writeback()
-        self.mem._writeback()
-        self.siginfo._writeback()
+    def _cacheflush(self):
+        self.regs._cacheflush()
+        self.mem._cacheflush()
+        self.siginfo._cacheflush()
 
     # def stop(self):
     #     # Need more research

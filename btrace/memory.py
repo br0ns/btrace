@@ -20,7 +20,7 @@ class Memory(object):
         self._cache = {}
         self._dirty = set()
 
-    def _writeback(self):
+    def _cacheflush(self):
         for addr in self._dirty:
             ptrace_poke(self._tracee.pid, addr, self._cache[addr])
         self._cache = {}

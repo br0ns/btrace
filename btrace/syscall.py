@@ -1,3 +1,5 @@
+import time
+
 from .info import REG_SP
 
 class _RW(object):
@@ -34,8 +36,16 @@ class Syscall(_RW):
         self._tracee = tracee
         self._nr = None
 
-    def _init(self):
+        self.started_at = None
+        self.stopped_at = None
+
+    def _start(self):
         self._nr = self._read(self._tracee.syscalls.NR)
+        self.started_at = time.time()
+
+    def _stop(self):
+        self.stopped_at = time.time()
+        self.time = self.stopped_at - self.started_at
 
     @property
     def nr(self):

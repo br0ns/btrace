@@ -11,7 +11,7 @@ class Registers(object):
         self._regs = None
         self._dirty = False
 
-    def _writeback(self):
+    def _cacheflush(self):
         if self._dirty:
             ptrace.ptrace_setregs(self._tracee.pid, self._regs)
         self._reset()
@@ -40,3 +40,11 @@ class Registers(object):
         if self[r] != v:
             setattr(self._regs, r, v)
             self._dirty = True
+
+    def __str__(self):
+        regs = [reg for reg in self.names if not reg.startswith('_')]
+        w = max(len(reg) for reg in regs)
+        out = []
+        for reg in regs:
+            out.append('%*s: %s' % (w, reg, hex(self[reg])))
+        return '\n'.join(out)

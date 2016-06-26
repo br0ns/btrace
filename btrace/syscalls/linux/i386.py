@@ -230,8 +230,8 @@ SYS_mincore                = 218
 SYS_madvise                = 219
 SYS_getdents64             = 220
 SYS_fcntl64                = 221
-
-
+# 222 is unused
+# 223 is unused
 SYS_gettid                 = 224
 SYS_readahead              = 225
 SYS_setxattr               = 226
@@ -259,7 +259,7 @@ SYS_io_getevents           = 247
 SYS_io_submit              = 248
 SYS_io_cancel              = 249
 SYS_fadvise64              = 250
-
+# 251 is available for reuse (was briefly sys_set_zone_reclaim)
 SYS_exit_group             = 252
 SYS_lookup_dcookie         = 253
 SYS_epoll_create           = 254
@@ -293,7 +293,7 @@ SYS_mq_notify              = 281
 SYS_mq_getsetattr          = 282
 SYS_sys_kexec_load         = 283
 SYS_waitid                 = 284
-
+# 285 sys_setaltroot
 SYS_add_key                = 286
 SYS_request_key            = 287
 SYS_keyctl                 = 288
@@ -362,6 +362,11 @@ SYS_finit_module           = 350
 SYS_sched_setattr          = 351
 SYS_sched_getattr          = 352
 SYS_renameat2              = 353
+SYS_seccomp                = 354
+SYS_getrandom              = 355
+SYS_memfd_create           = 356
+SYS_bpf                    = 357
+SYS_execveat               = 358
 
 syscall_names = {
       1 : 'exit',
@@ -717,4 +722,9 @@ syscall_names = {
     351 : 'sched_setattr',
     352 : 'sched_getattr',
     353 : 'renameat2',
+    354 : 'SYS_seccomp',
+    355 : 'SYS_getrandom',
+    356 : 'SYS_memfd_create',
+    357 : 'SYS_bpf',
+    358 : 'SYS_execveat',
 }

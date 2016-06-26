@@ -117,7 +117,7 @@ class Tracer(object):
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '-v':
         import logging
-        logging.basicConfig(level=logging.DEBUG, filename='run.log')
+        logging.basicConfig(level=logging.DEBUG, filename='run.log', filemode='w')
         sys.argv.pop(1)
 
     if len(sys.argv) == 1:

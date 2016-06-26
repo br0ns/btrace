@@ -1,4 +1,5 @@
 from . import ptrace
+from . import signals
 
 class Siginfo(object):
     _fields = dict(ptrace.regs_t._fields_).keys()
@@ -14,7 +15,7 @@ class Siginfo(object):
     def _init(self):
         self._siginfo = ptrace.ptrace_getsiginfo(self._tracee.pid)
 
-    def _writeback(self):
+    def _cacheflush(self):
         if self._dirty:
             ptrace.ptrace_setsiginfo(self._tracee.pid, self._siginfo)
         self._reset()
@@ -29,3 +30,11 @@ class Siginfo(object):
 
     def __getattr__(self, k):
         return getattr(self._siginfo, k)
+
+    @property
+    def signame(self):
+        return signals.signal_names[self.signo]
+
+    @signame.setter
+    def signame(self, v):
+        self.signo = getattr(signals, v)

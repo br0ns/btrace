@@ -326,6 +326,12 @@ SYS_finit_module           = 313
 SYS_sched_setattr          = 314
 SYS_sched_getattr          = 315
 SYS_renameat2              = 316
+SYS_seccomp                = 317
+SYS_getrandom              = 318
+SYS_memfd_create           = 319
+SYS_kexec_file_load        = 320
+SYS_bpf                    = 321
+SYS_execveat               = 322
 
 syscall_names = {
       0 : 'read',
@@ -645,4 +651,6 @@ syscall_names = {
     314 : 'sched_setattr',
     315 : 'sched_getattr',
     316 : 'renameat2',
+
+    318 : 'getrandom',
 }

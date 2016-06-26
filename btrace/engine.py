@@ -1,3 +1,5 @@
+# coding: utf-8
+
 import os
 import errno
 import logging
@@ -7,11 +9,11 @@ import types
 from collections import defaultdict
 
 from .ptrace      import *
-from .signals     import *
 from .syscalls    import *
 from .info        import *
 from .tracee      import Tracee
 from .personality import personality
+from .signals     import SIGSTOP, SIGTRAP
 
 _log = logging.getLogger(__name__)
 
@@ -114,6 +116,16 @@ class Engine(object):
         ptrace_seize(pid, self._ptrace_opts)
         ptrace_interrupt(pid)
         self._run(pid)
+
+    def detach(self, pid_or_tracee):
+        if isinstance(pid_or_tracee, (int, long)):
+            pid = pid_or_tracee
+            tracee = self.tracees.get(pid)
+            if not tracee:
+                raise ValueError('no tracee with PID=%d' % pid)
+        else:
+            tracee = pid_or_tracee
+        tracee.detach()
 
     def register(self, event, func, **flags):
         self._callbacks[event][func] = flags
@@ -279,15 +291,21 @@ class Engine(object):
                         'WPTRACEEVENT(status) should be 0 in syscall-stop'
                     syscall_stop = True
 
-                    if not tracee.in_syscall:
+                    # `in_syscall` has not yet been updated, so `True` means
+                    # that we're returning from a syscall.
+                    if tracee.in_syscall:
+                        # Stop the timer.
+                        tracee.syscall._stop()
+
                         # Override syscall number and return value if the
-                        # syscall was "emulated", i.e. getpid.  Otherwise read
-                        # the syscall from the tracee
+                        # syscall was "emulated", i.e. `getpid`.
                         if tracee.syscall.emulated:
                             tracee.syscall.nr = tracee.syscall.emu_nr
                             tracee.syscall.retval = tracee.syscall.emu_retval
-                        else:
-                            tracee.syscall._init()
+
+                    else:
+                        # Read syscall number and reset timer before entry.
+                        tracee.syscall._start()
 
                     syscall = tracee.syscall
 
@@ -318,40 +336,6 @@ class Engine(object):
                 exited = True
                 status = os.WEXITSTATUS(status)
 
-            # Logging
-            if stopped:
-                reason = 'stopped '
-                if signal_stop:
-                    reason += '(signal <%d:%s>)' % \
-                              (siginfo.signo, signal_names[siginfo.signo])
-                if group_stop:
-                    reason += '(group)'
-                if event_stop:
-                    reason += '(event <%d:%s>)' % (event, event_names[event])
-
-                if syscall_stop:
-                    if tracee.in_syscall:
-                        reason += '(syscall-exit <%d:%s> -> 0x%x)' % \
-                                  (syscall.nr,
-                                   syscall.name,
-                                   tracee.syscall.retval)
-                    else:
-                        reason += '(syscall-enter <%d:%s>)' % \
-                                  (syscall.nr, syscall.name)
-
-            if signalled:
-                reason = 'signalled (<%d:%s>)' % \
-                         (signal, signal_names[signal])
-
-            # This should not happen for a traced process
-            if continued:
-                reason = 'continued'
-
-            if exited:
-                reason = 'exited (%d)' % status
-
-            _log.debug(reason)
-
             # Tracee exited or was killed by a signal, so remove it.  No need to
             # report this exit as we have already done so when we got
             # `PTRACE_EVENT_EXIT`.
@@ -361,8 +345,13 @@ class Engine(object):
             #   handle that hypothetical situation below, if ptrace fails with
             #   `ESRCH` when we continue the tracee
             if exited or signalled:
+                _log.debug('<PID:%d> terminated' % pid)
                 self._del_tracee(tracee)
                 continue
+
+            # Log events.
+            if event:
+                _log.debug('event %d:%s' % (event, event_names[event]))
 
             # Handle `execve`'s: when a thread which is not the thread group
             # leader executes `execve`, all other threads in the thread group
@@ -398,10 +387,16 @@ class Engine(object):
 
             # Handle syscall-enter and syscall-exit.
             if syscall_stop:
-                # On syscall-stop in_syscall will never be set; the idea is that
-                # syscall-enter happens strictly before the tracee enters the
-                # syscall and syscall-exit strictly after.
+                # On syscall-stop `in_syscall` will never be set; the idea is
+                # that syscall-enter happens strictly before the tracee enters
+                # the syscall and syscall-exit strictly after.
                 if tracee.in_syscall:
+                    _log.debug('syscall-exit(%dµs) %d:%s -> 0x%0x' %
+                               (syscall.time * 1000000,
+                                syscall.nr,
+                                syscall.name,
+                                syscall.retval))
+
                     tracee.in_syscall = False
 
                     retval = tracee.syscall.retval
@@ -415,10 +410,14 @@ class Engine(object):
                     tracee.syscall.emulated = False
 
                 else:
+                    _log.debug('syscall-enter %d:%s' %
+                               (syscall.nr, syscall.name))
+
                     args = tracee.syscall.args
                     ret = self._run_callbacks('syscall',
                                               tracee, syscall, args) + \
                           self._run_callbacks(syscall.name, tracee, args)
+
                     tracee.in_syscall = True
 
                 # Collect return value override(s).
@@ -448,7 +447,7 @@ class Engine(object):
                     # We were supposed to enter a syscall, but a tracer returned
                     # a value, so we'll "emulate" the syscall instead.
                     if tracee.in_syscall:
-                        _log.debug('emulating syscall <%d:%s> -> 0x%x' % \
+                        _log.debug('emulating syscall %d:%s -> 0x%x' % \
                                    (syscall.nr, syscall.name, retval))
 
                         # XXX: For some reason `ptrace_sysemu` doesn't seem to
@@ -461,9 +460,10 @@ class Engine(object):
 
                     # The syscall return value was overridden by a tracer.
                     else:
-                        tracee.syscall.retval = retval
-                        _log.debug('overriding retval <%d:%s> -> 0x%x' % \
+                        _log.debug('overriding retval %d:%s -> 0x%x' % \
                                    (syscall.nr, syscall.name, retval))
+
+                        tracee.syscall.retval = retval
 
                 # We are about to enter an un-emulated `clone` syscall and we
                 # want to follow the child.  We must save the flags used in the
@@ -490,9 +490,13 @@ class Engine(object):
                 # interpret that as a step.
                 if self.singlestep and siginfo.signo == SIGTRAP:
                     _log.debug('step')
+
                     self._run_callbacks('step', tracee, siginfo)
 
                 else:
+                    _log.debug('signal %d:%s' %
+                               (siginfo.signo, siginfo.signame))
+
                     # Collect signal number overrides.
                     ret = self._run_callbacks('signal', tracee, siginfo)
                     if ret:
@@ -506,6 +510,8 @@ class Engine(object):
 
             # Ditto for group-stops.
             elif group_stop:
+                _log.debug('group-stop')
+
                 tracee.is_running = False
                 self._run_callbacks('stop', tracee)
 
@@ -533,17 +539,18 @@ class Engine(object):
                 self._run_callbacks('death', tracee, status)
 
             # Write-back and reset register, memory and siginfo caches.
-            tracee._writeback()
+            tracee._cacheflush()
 
             # Continue the tracee.
             try:
                 if group_stop:
-                    _log.debug('<PID:%d> stopped, calling ptrace_listen' % \
-                               pid)
                     ptrace_listen(pid)
                 elif sysemu:
                     # XXX: See comments about `ptrace_sysemu` above.
                     ptrace_sysemu(pid, cont_signal)
+                elif tracee._do_detach:
+                    # TODO: implement
+                    pass
                 elif self.singlestep:
                     ptrace_singlestep(pid, cont_signal)
                 else:
