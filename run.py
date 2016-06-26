@@ -132,7 +132,7 @@ if __name__ == '__main__':
 
     # tracer = Tracer1()
     tracer = Tracer2()
-    engine = Engine(tracers = [tracer], trace_restart=True)
+    engine = Engine(tracers = [], trace_restart=True)
     # engine.follow = False
 
     prog = sys.argv[1]

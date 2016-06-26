@@ -16,6 +16,7 @@ from .personality import personality
 from .signals     import SIGSTOP, SIGTRAP
 
 _log = logging.getLogger(__name__)
+_debug = _log.debug
 
 def _funcdesc(f):
     '''Internal utility function'''
@@ -104,10 +105,10 @@ class Engine(object):
             return
         self._follow = follow
         if follow:
-            _log.debug('enabling follow mode')
+            _debug('enabling follow mode')
             self._ptrace_opts |= PTRACE_O_FOLLOW
         else:
-            _log.debug('disabling follow mode')
+            _debug('disabling follow mode')
             self._ptrace_opts &= ~PTRACE_O_FOLLOW
 
         for pid in self.tracees.keys():
@@ -125,7 +126,7 @@ class Engine(object):
             # Should not return
             os._exit(0)
 
-        _log.debug('fork() -> %d' % pid)
+        _debug('fork() -> %d' % pid)
         ptrace_seize(pid, self._ptrace_opts)
         self._run(pid)
 
@@ -164,17 +165,17 @@ class Engine(object):
         while True:
             pid_, status = self._wait()
             if pid != pid_:
-                _log.debug('child <PID:%d> is not initial tracee' % pid_)
+                _debug('child <PID:%d> is not initial tracee' % pid_)
                 continue
 
             e = WPTRACEEVENT(status)
             s = os.WSTOPSIG(status)
             if os.WIFSTOPPED(status) and e == PTRACE_EVENT_STOP:
-                _log.debug('seized initial tracee <PID:%d>' % pid)
+                _debug('seized initial tracee <PID:%d>' % pid)
                 self._new_tracee(pid)
                 break
 
-            _log.debug('still waiting for <PID:%d>' % pid)
+            _debug('still waiting for <PID:%d>' % pid)
             # If this is not group-stop (`e` != 0 and `s` != `SIGTRAP`),
             # event-stop (`e` != 0 and `s` == `SIGTRAP`) or syscall-stop (`s` &
             # 0x80), then it must be signal-stop.
@@ -218,12 +219,12 @@ class Engine(object):
         # met.
         def maybe_tracee(pid):
             if pid not in stop_seen:
-                _log.debug('PTRACE_EVENT_STOP has not yet been observed in '
-                           '<PID:%d>' % pid)
+                _debug('PTRACE_EVENT_STOP has not yet been observed in '
+                       '<PID:%d>' % pid)
                 return
             if pid not in parent_seen:
-                _log.debug('parent of <PID:%d> has not yet observed '
-                           'PTRACE_EVENT_{FORK,VFORK,CLONE}' % pid)
+                _debug('parent of <PID:%d> has not yet observed '
+                       'PTRACE_EVENT_{FORK,VFORK,CLONE}' % pid)
                 return
             parent = parent_seen.pop(pid)
             cflags = clone_flags.pop(parent.pid, 0)
@@ -236,15 +237,15 @@ class Engine(object):
                 if e.errno == errno.ECHILD:
                     # This may happen if all the tracees are killed by SIGKILL,
                     # so we didn't get a change to observe their death.
-                    _log.debug('no tracees, exiting')
+                    _debug('no tracees, exiting')
                     break
                 raise
 
-            _log.debug('wait() -> %d, %02x|%02x|%02x' % \
-                       (pid,
-                        status >> 16,
-                        (status >> 8) & 0xff,
-                        status & 0xff))
+            _debug('wait() -> %d, %02x|%02x|%02x' % \
+                   (pid,
+                    status >> 16,
+                    (status >> 8) & 0xff,
+                    status & 0xff))
 
             if pid not in self.tracees:
                 # The child is not a tracee.  That can happen because 1) it was
@@ -346,13 +347,13 @@ class Engine(object):
             #   handle that hypothetical situation below, if ptrace fails with
             #   `ESRCH` when we continue the tracee.
             if exited or signalled:
-                _log.debug('<PID:%d> terminated' % pid)
+                _debug('<PID:%d> terminated' % pid)
                 self._del_tracee(tracee)
                 continue
 
             # Log events.
             if event:
-                _log.debug('event %d:%s' % (event, event_names[event]))
+                _debug('event %d:%s' % (event, event_names[event]))
 
             # Handle `execve`'s: when a thread which is not the thread group
             # leader executes `execve`, all other threads in the thread group
@@ -362,7 +363,7 @@ class Engine(object):
             if event == PTRACE_EVENT_EXEC:
                 oldpid = ptrace_geteventmsg(pid)
                 if pid != oldpid:
-                    _log.debug('repid (%d -> %d)' % (oldpid, pid))
+                    _debug('repid (%d -> %d)' % (oldpid, pid))
                     # Neither this tracee nor the thread group leader will
                     # report death, so we must do the clean-up here
                     self._del_tracee(tracee)
@@ -381,19 +382,13 @@ class Engine(object):
             cur_pers = personality(tracee)
             if cur_pers != tracee.personality:
                 old_pers = tracee.personality
-                _log.debug('personality change %d (%d -> %d)' % \
-                           (pid, old_pers, cur_pers))
+                _debug('personality change %d (%d -> %d)' % \
+                       (pid, old_pers, cur_pers))
                 tracee.personality = cur_pers
                 self._run_callbacks('personality_change', tracee, old_pers)
 
             # Handle syscalls.
             if syscall_stop:
-                # The `nr` and `name` attributes are what the tracer sees and
-                # not the real values in case of a restarted or emulated
-                # syscall.
-                realnr = syscall._get_nr()
-                realname = tracee.syscalls.syscall_names[realnr]
-
                 # We manipulate `in_syscall` below, so we record whether we're
                 # entering or exiting a syscall here.  A callback for `syscall`
                 # or `syscall_return` will always see `in_syscall` as being
@@ -402,7 +397,13 @@ class Engine(object):
 
                 # This is syscall-enter.
                 if is_entering:
-                    _log.debug('syscal-enter %d:%s' % (realnr, realname))
+                    # The `nr` and `name` attributes are what the tracer sees
+                    # and not the real values in case of a restarted or emulated
+                    # syscall.
+                    realnr = syscall._get_nr()
+                    realname = tracee.syscalls.syscall_names[realnr]
+
+                    _debug('syscal-enter %d:%s' % (realnr, realname))
 
                     if self.trace_restart or realname != 'restart_syscall':
                         # Initialize syscall object.
@@ -416,8 +417,8 @@ class Engine(object):
                         # returned a value, so we'll "emulate" the syscall
                         # instead.
                         if retval:
-                            _log.debug('emulating syscall %d:%s -> 0x%x' % \
-                                       (syscall.nr, syscall.name, retval))
+                            _debug('emulating syscall %d:%s -> 0x%x' % \
+                                   (syscall.nr, syscall.name, retval))
                             # XXX: For some reason `ptrace_sysemu` doesn't seem
                             # XXX: to work for me, so I replace the syscall with
                             # XXX: a "nop" syscall in the form of `getpid`
@@ -440,14 +441,14 @@ class Engine(object):
                         CLONE_UNTRACED = 0x00800000
                         if self.follow and syscall.name == 'clone':
                             if syscall.args[0] & CLONE_UNTRACED:
-                                _log.debug(
-                                    'removed CLONE_UNTRACED in clone syscall')
+                                _debug('removed CLONE_UNTRACED in clone ' \
+                                       'syscall')
 
                             clone_flags[pid] = syscall.args[0]
                             syscall.args[0] &= ~CLONE_UNTRACED
 
                     else:
-                        _log.debug('ignoring syscall-enter due to restart')
+                        _debug('ignoring syscall-enter due to restart')
 
                     # And finally (after the callbacks have run at least) set
                     # `in_syscall`.
@@ -455,8 +456,8 @@ class Engine(object):
 
                 # This is syscall-exit.
                 else:
-                    _log.debug('syscall-exit %d:%s -> %#x' % \
-                               (realnr, realname, syscall.retval))
+                    _debug('syscall-exit %d:%s -> %#x' % \
+                           (syscall.nr, syscall.name, syscall.retval))
 
                     # We're no longer in the syscall.
                     tracee.in_syscall = False
@@ -476,33 +477,32 @@ class Engine(object):
                             tracee, is_entering)
 
                         if retval:
-                            _log.debug('overriding syscall %d:%s -> 0x%x' % \
-                                       (syscall.nr, syscall.name, retval))
+                            _debug('overriding syscall %d:%s -> 0x%x' % \
+                                   (syscall.nr, syscall.name, retval))
 
                             syscall.retval = retval
 
                     else:
-                        _log.debug('ignoring syscall-exit due to restart')
+                        _debug('ignoring syscall-exit due to restart')
 
             # Run callbacks for signals and single stepping.
             elif signal_stop:
                 # If we are single stepping and received a `SIGTRAP`, we
                 # interpret that as a step.
                 if self.singlestep and siginfo.signo == SIGTRAP:
-                    _log.debug('step')
+                    _debug('step')
 
                     self._run_callbacks('step', tracee, siginfo)
 
                 else:
-                    _log.debug('signal %d:%s' %
-                               (siginfo.signo, siginfo.signame))
+                    _debug('signal %d:%s' % (siginfo.signo, siginfo.signame))
 
                     cont_signal = self._run_signal_callbacks(tracee) or \
                                   cont_signal
 
             # Ditto for group-stops.
             elif group_stop:
-                _log.debug('group-stop')
+                _debug('group-stop')
 
                 tracee.is_running = False
                 self._run_callbacks('stop', tracee)
@@ -581,7 +581,7 @@ class Engine(object):
             except Exception as e:
                 _log.error('Callback for event "%s" raised an exception: %r' % \
                            (event, e))
-                _log.debug('Traceback:\n' + traceback.format_exc())
+                _debug('Traceback:\n' + traceback.format_exc())
 
         for tracer in self.tracers:
             # Since tracers may be added (or removed) at any time we make sure
@@ -649,7 +649,7 @@ class Engine(object):
             return signo
 
     def _new_tracee(self, pid, parent=None, clone_flags=0):
-        _log.debug('new tracee, <PID:%d>' % pid)
+        _debug('new tracee, <PID:%d>' % pid)
         tracee = Tracee(pid, parent, clone_flags)
         assert pid not in self.tracees, \
             '<PID:%d> is already a tracee' % pid
