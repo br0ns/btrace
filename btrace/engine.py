@@ -344,7 +344,7 @@ class Engine(object):
             #   with `PTRACE_EVENT_EXIT` even if they are killed by `SIGKILL`.
             #   According to the man page that may change in the future.  We
             #   handle that hypothetical situation below, if ptrace fails with
-            #   `ESRCH` when we continue the tracee
+            #   `ESRCH` when we continue the tracee.
             if exited or signalled:
                 _log.debug('<PID:%d> terminated' % pid)
                 self._del_tracee(tracee)
@@ -399,8 +399,6 @@ class Engine(object):
                 # or `syscall_return` will always see `in_syscall` as being
                 # false.
                 is_entering = not tracee.in_syscall
-
-                _log.debug('entering %s' % is_entering)
 
                 # This is syscall-enter.
                 if is_entering:
