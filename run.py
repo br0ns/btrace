@@ -25,7 +25,7 @@ def showact(tracee, act, Sigaction):
         bin(act.sa_flags or 0),
         hex(act.sa_restorer or 0))
 
-class Tracer(object):
+class Tracer1(object):
     expect_read = False
     # def on_syscall(self, tracee, nr, name, args):
     #     if name in ('exit', 'exit_group'):
@@ -114,6 +114,12 @@ class Tracer(object):
     #     if self.forks == 99:
     #         self.engine.follow = True
 
+class Tracer2(object):
+    def on_syscall(self, tracee, syscall, args):
+        print tracee.pid, 'SYS-enter', syscall.name
+    def on_syscall_return(self, tracee, syscall, retval):
+        print tracee.pid, 'SYS-exit', syscall.name, hex(retval)
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '-v':
         import logging
@@ -124,8 +130,9 @@ if __name__ == '__main__':
         print 'usage: %s [-v] <program> [<arg> [<arg> ...]]' % sys.argv[0]
         exit(-1)
 
-    tracer = Tracer()
-    engine = Engine(tracers = [tracer])
+    # tracer = Tracer1()
+    tracer = Tracer2()
+    engine = Engine(tracers = [tracer], trace_restart=True)
     # engine.follow = False
 
     prog = sys.argv[1]

@@ -9,6 +9,7 @@ ARGS = [
 ]
 RETVAL = ('reg', 'eax')
 
+SYS_restart_syscall        =   0
 SYS_exit                   =   1
 SYS_fork                   =   2
 SYS_read                   =   3
@@ -369,6 +370,7 @@ SYS_bpf                    = 357
 SYS_execveat               = 358
 
 syscall_names = {
+      0 : 'restart_syscall',
       1 : 'exit',
       2 : 'fork',
       3 : 'read',

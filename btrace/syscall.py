@@ -39,11 +39,14 @@ class Syscall(_RW):
         self.started_at = None
         self.stopped_at = None
 
-    def _start(self):
-        self._nr = self._read(self._tracee.syscalls.NR)
+    def _get_nr(self):
+        return self._read(self._tracee.syscalls.NR)
+
+    def _init(self):
+        self._nr = self._get_nr()
         self.started_at = time.time()
 
-    def _stop(self):
+    def _fini(self):
         self.stopped_at = time.time()
         self.time = self.stopped_at - self.started_at
 

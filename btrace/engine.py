@@ -32,14 +32,29 @@ def _funcdesc(f):
 # `PTRACE_O_TRACEFORK` is set), if `clone` is called with exit signal `SIGCHLD`
 # then `PTRACE_EVENT_FORK` is observed (if `PTRACE_O_FORK` is set), and in all
 # other cases `PTRACE_EVENT_CLONE` is observed (if `PTRACE_O_CLONE` is set).
-PTRACE_O_FOLLOW = PTRACE_O_TRACECLONE   | \
-                  PTRACE_O_TRACEFORK    | \
-                  PTRACE_O_TRACEVFORK
+PTRACE_O_FOLLOW = \
+    PTRACE_O_TRACECLONE   | \
+    PTRACE_O_TRACEFORK    | \
+    PTRACE_O_TRACEVFORK
 
 # Corresponding "alias" for events.
-PTRACE_EVENTS_FOLLOW = (PTRACE_EVENT_CLONE,
-                        PTRACE_EVENT_FORK,
-                        PTRACE_EVENT_VFORK)
+PTRACE_EVENTS_FOLLOW = (
+    PTRACE_EVENT_CLONE,
+    PTRACE_EVENT_FORK,
+    PTRACE_EVENT_VFORK)
+
+# A syscall returning one of these values will be restarted.  Defined in:
+#   /include/linux/errno.h.
+ERESTARTSYS           = 0x200
+ERESTARTNOINTR        = 0x201
+ERESTARTNOHAND        = 0x202
+ERESTART_RESTARTBLOCK = 0x204
+RETVAL_RESTART = (
+    ERESTARTSYS,
+    ERESTARTNOINTR,
+    ERESTARTNOHAND,
+    ERESTART_RESTARTBLOCK)
+
 
 class Engine(object):
     '''The btrace tracing engine.
@@ -58,8 +73,10 @@ class Engine(object):
 
     - kill(tracee, signum): SIGKILL
     '''
-    def __init__(self, follow=True, singlestep=False, tracers=[]):
+    def __init__(self, follow=True, singlestep=False, trace_restart=False,
+                 tracers=[]):
         self.singlestep = singlestep
+        self.trace_restart = trace_restart
         self.tracers = tracers
 
         self.tracees = {}
@@ -283,6 +300,7 @@ class Engine(object):
             # XXX: Link to UML's SYSEMU patches: http://sysemu.sourceforge.net/
             sysemu = False
 
+            # Here we just set the variables.  The real logic follows below.
             if os.WIFSTOPPED(status):
                 stopped = True
 
@@ -290,23 +308,6 @@ class Engine(object):
                     assert e == 0, \
                         'WPTRACEEVENT(status) should be 0 in syscall-stop'
                     syscall_stop = True
-
-                    # `in_syscall` has not yet been updated, so `True` means
-                    # that we're returning from a syscall.
-                    if tracee.in_syscall:
-                        # Stop the timer.
-                        tracee.syscall._stop()
-
-                        # Override syscall number and return value if the
-                        # syscall was "emulated", i.e. `getpid`.
-                        if tracee.syscall.emulated:
-                            tracee.syscall.nr = tracee.syscall.emu_nr
-                            tracee.syscall.retval = tracee.syscall.emu_retval
-
-                    else:
-                        # Read syscall number and reset timer before entry.
-                        tracee.syscall._start()
-
                     syscall = tracee.syscall
 
                 elif e:
@@ -385,104 +386,105 @@ class Engine(object):
                 tracee.personality = cur_pers
                 self._run_callbacks('personality_change', tracee, old_pers)
 
-            # Handle syscall-enter and syscall-exit.
+            # Handle syscalls.
             if syscall_stop:
-                # On syscall-stop `in_syscall` will never be set; the idea is
-                # that syscall-enter happens strictly before the tracee enters
-                # the syscall and syscall-exit strictly after.
-                if tracee.in_syscall:
-                    _log.debug('syscall-exit(%dµs) %d:%s -> 0x%0x' %
-                               (syscall.time * 1000000,
-                                syscall.nr,
-                                syscall.name,
-                                syscall.retval))
+                # The `nr` and `name` attributes are what the tracer sees and
+                # not the real values in case of a restarted or emulated
+                # syscall.
+                realnr = syscall._get_nr()
+                realname = tracee.syscalls.syscall_names[realnr]
 
-                    tracee.in_syscall = False
+                # We manipulate `in_syscall` below, so we record whether we're
+                # entering or exiting a syscall here.  A callback for `syscall`
+                # or `syscall_return` will always see `in_syscall` as being
+                # false.
+                is_entering = not tracee.in_syscall
 
-                    retval = tracee.syscall.retval
-                    ret = self._run_callbacks('syscall_return',
-                                              tracee, syscall, retval) + \
-                          self._run_callbacks(syscall.name + '_return',
-                                              tracee, retval)
+                _log.debug('entering %s' % is_entering)
 
-                    # Reset after callbacks have run so they can see if the
-                    # syscall was emulated.
-                    tracee.syscall.emulated = False
+                # This is syscall-enter.
+                if is_entering:
+                    _log.debug('syscal-enter %d:%s' % (realnr, realname))
 
-                else:
-                    _log.debug('syscall-enter %d:%s' %
-                               (syscall.nr, syscall.name))
+                    if self.trace_restart or realname != 'restart_syscall':
+                        # Initialize syscall object.
+                        syscall._init()
 
-                    args = tracee.syscall.args
-                    ret = self._run_callbacks('syscall',
-                                              tracee, syscall, args) + \
-                          self._run_callbacks(syscall.name, tracee, args)
+                        args = syscall.args
+                        retval = self._run_syscall_callbacks(
+                            tracee, is_entering)
 
+                        # We were supposed to enter a syscall, but a tracer
+                        # returned a value, so we'll "emulate" the syscall
+                        # instead.
+                        if retval:
+                            _log.debug('emulating syscall %d:%s -> 0x%x' % \
+                                       (syscall.nr, syscall.name, retval))
+                            # XXX: For some reason `ptrace_sysemu` doesn't seem
+                            # XXX: to work for me, so I replace the syscall with
+                            # XXX: a "nop" syscall in the form of `getpid`
+                            syscall.emulated = True
+                            syscall.emu_nr = syscall.nr
+                            syscall.emu_retval = retval
+                            syscall.name = 'getpid'
+
+                        # We are about to enter an un-emulated (if it was
+                        # emulated `name` would be "getpid") `clone` syscall and
+                        # we want to follow the child.  We must save the flags
+                        # used in the syscall so we can correctly set the parent
+                        # and thread group of the newly created process/thread
+                        # when it arrives.  Also, if the `CLONE_UNTRACED` flag
+                        # is set, we unset it so we become a tracer of the
+                        # child.  This check needs to be placed here, after the
+                        # callbacks have run, as the syscall may be changed or
+                        # simulated by a tracer.  `CLONE_UNTRACED` is defined in
+                        # /usr/include/linux/sched.h
+                        CLONE_UNTRACED = 0x00800000
+                        if self.follow and syscall.name == 'clone':
+                            if syscall.args[0] & CLONE_UNTRACED:
+                                _log.debug(
+                                    'removed CLONE_UNTRACED in clone syscall')
+
+                            clone_flags[pid] = syscall.args[0]
+                            syscall.args[0] &= ~CLONE_UNTRACED
+
+                    else:
+                        _log.debug('ignoring syscall-enter due to restart')
+
+                    # And finally (after the callbacks have run at least) set
+                    # `in_syscall`.
                     tracee.in_syscall = True
 
-                # Collect return value override(s).
-                ret_ = []
-                for f, r in ret:
-                    bits = tracee.wordsize * 8
-                    lb = -2**(bits - 1)
-                    ub = 2**bits - 1
-                    if not isinstance(r, (int, long)) or \
-                       r < lb or r > ub:
-                        _log.warn(
-                            'callbacks must return an integer [-2^%d;2^%d), ' \
-                            '%s returned %r' % (bits - 1, bits, _funcdesc(f), r)
-                        )
-                        continue
-                    r &= ub
-                    ret_.append((f, r))
-                ret = ret_
+                # This is syscall-exit.
+                else:
+                    _log.debug('syscall-exit %d:%s -> %#x' % \
+                               (realnr, realname, syscall.retval))
 
-                if ret:
-                    func, retval = ret[-1]
-                    if len(ret) > 1:
-                        _log.warn('multiple syscall return values; last ' \
-                                  'callback takes precedence: %r' % \
-                                  _funcdesc(func))
+                    # We're no longer in the syscall.
+                    tracee.in_syscall = False
 
-                    # We were supposed to enter a syscall, but a tracer returned
-                    # a value, so we'll "emulate" the syscall instead.
-                    if tracee.in_syscall:
-                        _log.debug('emulating syscall %d:%s -> 0x%x' % \
-                                   (syscall.nr, syscall.name, retval))
+                    if self.trace_restart or \
+                       -syscall.retval & 0x3ff not in RETVAL_RESTART:
+                        # Finalize syscall object, i.e. stop the timer.
+                        syscall._fini()
 
-                        # XXX: For some reason `ptrace_sysemu` doesn't seem to
-                        # XXX: work for me, so I replace the syscall with a
-                        # XXX: "nop" syscall in the form of `getpid`
-                        tracee.syscall.emulated = True
-                        tracee.syscall.emu_nr = syscall.nr
-                        tracee.syscall.emu_retval = retval
-                        tracee.syscall.name = 'getpid'
+                        # Set syscall number and return value if the syscall was
+                        # "emulated", i.e. `getpid`.
+                        if syscall.emulated:
+                            syscall.nr = syscall.emu_nr
+                            syscall.retval = syscall.emu_retval
 
-                    # The syscall return value was overridden by a tracer.
+                        retval = self._run_syscall_callbacks(
+                            tracee, is_entering)
+
+                        if retval:
+                            _log.debug('overriding syscall %d:%s -> 0x%x' % \
+                                       (syscall.nr, syscall.name, retval))
+
+                            syscall.retval = retval
+
                     else:
-                        _log.debug('overriding retval %d:%s -> 0x%x' % \
-                                   (syscall.nr, syscall.name, retval))
-
-                        tracee.syscall.retval = retval
-
-                # We are about to enter an un-emulated `clone` syscall and we
-                # want to follow the child.  We must save the flags used in the
-                # syscall so we can correctly set the parent and thread group of
-                # the newly created process/thread when it arrives.  Also, if
-                # the `CLONE_UNTRACED` flag is set, we unset it so we become a
-                # tracer of the child.  This check needs to be placed here,
-                # after the callbacks have run, as the syscall may be changed or
-                # simulated by a tracer.  `CLONE_UNTRACED` is defined in
-                # /usr/include/linux/sched.h
-                CLONE_UNTRACED = 0x00800000
-                if self.follow              and \
-                   tracee.in_syscall        and \
-                   not syscall.emulated     and \
-                   syscall.name == 'clone':
-                    clone_flags[pid] = syscall.args[0]
-                    if syscall.args[0] & CLONE_UNTRACED:
-                        syscall.args[0] &= ~CLONE_UNTRACED
-                        _log.debug('removed CLONE_UNTRACED in clone syscall')
+                        _log.debug('ignoring syscall-exit due to restart')
 
             # Run callbacks for signals and single stepping.
             elif signal_stop:
@@ -497,16 +499,8 @@ class Engine(object):
                     _log.debug('signal %d:%s' %
                                (siginfo.signo, siginfo.signame))
 
-                    # Collect signal number overrides.
-                    ret = self._run_callbacks('signal', tracee, siginfo)
-                    if ret:
-                        func, signo = ret[-1]
-                        if len(ret) > 1:
-                            _log.warn('multiple signal numbers; last ' \
-                                      'callback takes precedence: %r' % \
-                                      _funcdesc(func))
-                        # Override signal
-                        cont_signal = signo
+                    cont_signal = self._run_signal_callbacks(tracee) or \
+                                  cont_signal
 
             # Ditto for group-stops.
             elif group_stop:
@@ -604,6 +598,57 @@ class Engine(object):
             run(func)
 
         return out
+
+    def _run_syscall_callbacks(self, tracee, is_entering):
+        # Collect return value override(s).
+        syscall = tracee.syscall
+
+        rets = []
+        if is_entering:
+            rets += self._run_callbacks('syscall',
+                                        tracee, syscall, syscall.args)
+            rets += self._run_callbacks(syscall.name, tracee, syscall.args)
+        else:
+            rets += self._run_callbacks('syscall_return',
+                                        tracee, syscall, syscall.retval)
+            rets += self._run_callbacks(syscall.name + '_return',
+                                        tracee, syscall.retval)
+
+        rets_ = []
+        for f, r in rets:
+            bits = tracee.wordsize * 8
+            lb = -2**(bits - 1)
+            ub = 2**bits - 1
+            if not isinstance(r, (int, long)) or \
+               r < lb or r > ub:
+                _log.warn(
+                    'callbacks must return an integer [-2^%d;2^%d), ' \
+                    '%s returned %r' % (bits - 1, bits, _funcdesc(f), r)
+                )
+                continue
+            r &= ub
+            rets_.append((f, r))
+        rets = rets_
+
+        if rets:
+            func, retval = rets[-1]
+            if len(rets) > 1:
+                _log.warn('multiple syscall return values; last ' \
+                          'callback takes precedence: %r' % \
+                          _funcdesc(func))
+            return retval
+
+    def _run_signal_callbacks(self, tracee):
+        # Collect signal override(s).
+        siginfo = tracee.siginfo
+        sigs = self._run_callbacks('signal', tracee, siginfo)
+        if sigs:
+            func, signo = sigs[-1]
+            if len(sigs) > 1:
+                _log.warn('multiple signal numbers; last ' \
+                          'callback takes precedence: %r' % \
+                          _funcdesc(func))
+            return signo
 
     def _new_tracee(self, pid, parent=None, clone_flags=0):
         _log.debug('new tracee, <PID:%d>' % pid)

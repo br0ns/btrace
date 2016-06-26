@@ -1,5 +1,6 @@
 import inspect
 import ctypes
+import collections
 
 from .ptrace import *
 
@@ -57,7 +58,7 @@ class Memory(object):
         if isinstance(k, slice):
             for i, addr in enumerate(xrange(k.start, k.stop, k.step or 1)):
                 self._write(addr, v[i])
-        elif hasattr(v, '__iter__'):
+        elif isinstance(v, collections.Sequence):
             for i, v in enumerate(v):
                 self._write(k + i, v)
         else:
