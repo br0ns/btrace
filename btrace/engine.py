@@ -160,8 +160,9 @@ class Engine(object):
             cbs.pop(func, None)
 
     def _run(self, pid):
-        # TODO: this
-        # This is the entry point after running either `start` or `attach`.  In both
+        # This is the entry point after running either `start` or `attach`.  In
+        # both cases we are already the tracer of `pid`, and the process is
+        # running.
 
         # The initial tracee is the only tracee that may stop for other reasons
         # before `PTRACE_EVENT_STOP`, so we handle it specially here.  If the
@@ -490,6 +491,11 @@ class Engine(object):
                                    (syscall.nr, syscall.name, retval))
 
                             syscall.retval = retval
+
+                        # The `emulated` flag is reset here, after the callbacks
+                        # have run, so they can see whether the syscall was
+                        # emulated or not.
+                        syscall.emulated = False
 
                     else:
                         _debug('ignoring syscall-exit due to restart')
