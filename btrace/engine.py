@@ -426,7 +426,7 @@ class Engine(object):
                         # We were supposed to enter a syscall, but a tracer
                         # returned a value, so we'll "emulate" the syscall
                         # instead.
-                        if retval:
+                        if retval != None:
                             _debug('emulating syscall %d:%s -> 0x%x' % \
                                    (syscall.nr, syscall.name, retval))
                             # XXX: For some reason `ptrace_sysemu` doesn't seem
@@ -486,7 +486,7 @@ class Engine(object):
                         retval = self._run_syscall_callbacks(
                             tracee, is_entering)
 
-                        if retval:
+                        if retval != None:
                             _debug('overriding syscall %d:%s -> 0x%x' % \
                                    (syscall.nr, syscall.name, retval))
 
