@@ -1,0 +1,2 @@
+class STracer(object):
+    pass
