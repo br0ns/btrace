@@ -60,7 +60,7 @@ class Syscall(_RW):
 
     @nr.setter
     def nr(self, val):
-        self._nr = nr
+        self._nr = val
         self._write(self._tracee.syscalls.NR, val)
 
     @property
