@@ -12,7 +12,7 @@ from collections import defaultdict
 from .ptrace      import *
 from .tracee      import Tracee
 from .personality import personality
-from .signals     import SIGSTOP, SIGCONT, SIGTRAP
+from .signals     import signal_names, SIGSTOP, SIGCONT, SIGTRAP
 # These are the tracer's syscalls, not the tracee's.
 from .info        import SYSCALLS
 
@@ -53,7 +53,7 @@ PTRACE_EVENTS_FOLLOW = (
     PTRACE_EVENT_VFORK)
 
 # A syscall returning one of these values will be restarted.  Defined in:
-#   /include/linux/errno.h.
+#   /include/linux/errno.h.  See also /linux/arch/um/kernel/signal.c.
 ERESTARTSYS           = 0x200
 ERESTARTNOINTR        = 0x201
 ERESTARTNOHAND        = 0x202
@@ -65,30 +65,35 @@ RETVAL_RESTART = (
     -ERESTART_RESTARTBLOCK)
 
 class Engine(object):
-    '''The btrace tracing engine.
+    '''The Btrace tracing engine.
 
-    Events:
-    - syscall(tracee, syscall, args)
-    - syscall_return(tracee, syscall, retval)
-    - birth(tracee): after process creation
-    - death(tracee, status): before process termination
-
-    - repid(tracee, oldpid)
-    - signal(tracee, signal)
-
-    - stop(tracee)
-    - cont(tracee)
-
-    - kill(tracee, signum): SIGKILL
+    The tracing engine monitors a collection of :class:`tracee.Tracee`s.  A list
+    of tracers recieve callbacks for various events.  See
+    :class:`tracers.DocTracer` for details on the tracer API.
     '''
-    def __init__(self, follow=True, singlestep=False, trace_restart=False,
-                 tracers=[]):
+    def __init__(self, tracers=[], follow=True, singlestep=False,
+                 trace_restart=False):
+        '''__init__(tracers = [], follow = True, singlestep = False,
+                                trace_restart = False) -> Engine
+
+        Arguments:
+            tracers(iterable): Tracers receiving callbacks from the tracing engine.
+                Tracers can be added and removed by manipulating the list
+                :attr:`tracers`.  No tracers are enabled by default.
+            follow(bool): Attach to children (and clones) as they are created.  Can be
+                changed by setting :attr:`follow`.  Enabled by default.
+            singlestep(bool): Singlestep all attached tracees (*very* slow).  Can be
+                changed by setting :attr:`singlestep`.  Disabled by default.
+            trace_restart(bool): Invoke callbacks for restarted syscalls.  Can be
+                changed by setting :attr:`trace_restart`.  Disabled by default.
+        '''
         self.singlestep = singlestep
         self.trace_restart = trace_restart
-        self.tracers = tracers
+        self.tracers = list(tracers)
 
         self.tracees = {}
 
+        # Dictionary of ad-hoc callbacks: event -> function -> flags
         self._callbacks = defaultdict(dict)
 
         opts = PTRACE_O_TRACESYSGOOD | \
@@ -265,7 +270,6 @@ class Engine(object):
                 # only be true if `wait` was called with `UNTRACED` or if the
                 # child is a ptrace tracee.  In the second case we must observe
                 # `PTRACE_EVENT_STOP`.
-                #
                 if os.WIFSTOPPED(status):
                     assert WPTRACEEVENT(status) == PTRACE_EVENT_STOP, \
                         'non-tracee child stopped without PTRACE_EVENT_STOP'
@@ -349,6 +353,7 @@ class Engine(object):
             # Tracee exited or was killed by a signal, so remove it.  No need to
             # report this exit as we have already done so when we got
             # `PTRACE_EVENT_EXIT`.
+            #
             # Caveat: At the moment (kernel 4.5.0) tracees stop in event-stop
             #   with `PTRACE_EVENT_EXIT` even if they are killed by `SIGKILL`.
             #   According to the man page that may change in the future.  We
@@ -383,30 +388,45 @@ class Engine(object):
                     self.tracees[pid] = tracee
                     self._run_callbacks('repid', tracee, oldpid)
 
+            # We're entering or exiting a syscall so update `in_syscall`.
+            # Invariant: a callback for `syscall` will always see `in_syscall`
+            # as being true, and a callback for `syscall_return` will always see
+            # it as being false.
+            #
+            # This check must be placed here, before the personality is
+            # detected, because a syscall on Linux x86_64 (XXX: and others?) be
+            # run in 32 bit mode depending on how it was called (specifically
+            # through `int 0x80` or 32 bit `syscall` [which apparently only
+            # exists on AMD CPU's and is all but undocumented; see comment in
+            # `/linux/arch/x86/entry/entry_32.S`]).
+            if syscall_stop:
+                # Go from syscall to not in syscall or vice versa
+                tracee.in_syscall ^= True
+
+            # See if the tracee changed personality.  This check may depend on
+            # `in_syscall` (see comment above).
+            self._detect_personality(tracee)
+
+            # OK, now all the tracee's state variables has been set and we're
+            # ready to fire callbacks, etc.
+
+            # Trigger single step callbacks.  We do not reset
+            # `_was_singlestepped` here because we need it to be set in order to
+            # supress callbacks for `SIGTRAP`.
+            if tracee._was_singlestepped:
+                _debug('step')
+                self._run_callbacks('step', tracee)
+
             # This tracee was stopped, but now it's running again!
             if not tracee.is_running:
                 tracee.is_running = True
                 self._run_callbacks('cont', tracee)
 
-            # See if the tracee changed personality.
-            cur_pers = personality(tracee)
-            if cur_pers != tracee.personality:
-                old_pers = tracee.personality
-                _debug('personality change %d (%d -> %d)' % \
-                       (pid, old_pers, cur_pers))
-                tracee.personality = cur_pers
-                self._run_callbacks('personality_change', tracee, old_pers)
-
             # Handle syscalls.
             if syscall_stop:
-                # We manipulate `in_syscall` below, so we record whether we're
-                # entering or exiting a syscall here.  A callback for `syscall`
-                # or `syscall_return` will always see `in_syscall` as being
-                # false.
-                is_entering = not tracee.in_syscall
 
                 # This is syscall-enter.
-                if is_entering:
+                if tracee.in_syscall:
                     # The `nr` and `name` attributes are what the tracer sees
                     # and not the real values in case of a restarted or emulated
                     # syscall.
@@ -420,8 +440,7 @@ class Engine(object):
                         syscall._init()
 
                         args = syscall.args
-                        retval = self._run_syscall_callbacks(
-                            tracee, is_entering)
+                        retval = self._run_syscall_callbacks(tracee)
 
                         # We were supposed to enter a syscall, but a tracer
                         # returned a value, so we'll "emulate" the syscall
@@ -460,17 +479,10 @@ class Engine(object):
                     else:
                         _debug('ignoring syscall-enter due to restart')
 
-                    # And finally (after the callbacks have run at least) set
-                    # `in_syscall`.
-                    tracee.in_syscall = True
-
                 # This is syscall-exit.
                 else:
                     _debug('syscall-exit %d:%s -> %#x' % \
                            (syscall.nr, syscall.name, syscall.retval))
-
-                    # We're no longer in the syscall.
-                    tracee.in_syscall = False
 
                     if self.trace_restart or \
                        syscall.retval not in RETVAL_RESTART:
@@ -483,8 +495,7 @@ class Engine(object):
                             syscall.nr = syscall.emu_nr
                             syscall.retval = syscall.emu_retval
 
-                        retval = self._run_syscall_callbacks(
-                            tracee, is_entering)
+                        retval = self._run_syscall_callbacks(tracee)
 
                         if retval != None:
                             _debug('overriding syscall %d:%s -> 0x%x' % \
@@ -502,18 +513,26 @@ class Engine(object):
 
             # Run callbacks for signals and single stepping.
             elif signal_stop:
-                # If we are single stepping and received a `SIGTRAP`, we
-                # interpret that as a step.
-                if self.singlestep and siginfo.signo == SIGTRAP:
-                    _debug('step')
-
-                    self._run_callbacks('step', tracee, siginfo)
+                # A single stepped tracee will signal-stop with `SIGTRAP` when
+                # executing the next instruction, so we need to supress that
+                # signal.  Otherwise run callbacks and deliver signals as usual.
+                if siginfo.signo == SIGTRAP and tracee._was_singlestepped:
+                    cont_signal = 0
 
                 else:
                     _debug('signal %d:%s' % (siginfo.signo, siginfo.signame))
 
-                    cont_signal = self._run_signal_callbacks(tracee) or \
-                                  cont_signal
+                    retval = self._run_signal_callbacks(tracee)
+                    if retval != None:
+                        if retval == 0:
+                            _debug('supressing signal %d:%s' % \
+                                   (siginfo.signo, siginfo.signame))
+                        else:
+                            _debug('overriding signal %d:%s -> %d:%s' % \
+                                   (siginfo.signo, siginfo.signame, retval,
+                                    signal_names.get(retval, 'SIG???')))
+
+                        cont_signal = retval
 
             # Ditto for group-stops.
             elif group_stop:
@@ -537,7 +556,7 @@ class Engine(object):
 
                 # And finally create and start the new tracee if
                 # `PTRACE_EVENT_STOP` was already seen (as mentioned above, I've
-                # only seen this behaviour from `vfork`).
+                # only seen this behavior from `vfork`).
                 maybe_tracee(newpid)
 
             # Handle deaths.
@@ -547,25 +566,59 @@ class Engine(object):
                 tracee.is_alive = False
                 self._run_callbacks('death', tracee, status)
 
-            # Write-back and reset register, memory and siginfo caches.
+            # Should the tracee be single stepped?
+            do_singlestep = self.singlestep or tracee.singlestep or \
+                            tracee.singlesteps > 0
+            # If so, we need a to know whether we're about to make a syscall or
+            # not, and figuring that out probably requires reading the tracee's
+            # registers and/or memory, so we should do it here, before we flush
+            # the register, memory and siginfo caches.
+            if do_singlestep:
+                at_syscall = tracee.at_syscall
+
+            # And now we can flush them.
             tracee._cacheflush()
 
             # Continue the tracee.
             try:
                 if group_stop:
                     ptrace_listen(pid)
+
                 elif sysemu:
                     # XXX: See comments about `ptrace_sysemu` above.
                     ptrace_sysemu(pid, cont_signal)
+
                 elif tracee._do_detach:
                     _debug('detached <PID:%d>' % pid)
                     ptrace_detach(pid, cont_signal)
                     # Continue the tracee.
                     _tgkill(tracee.tgid, tracee.tid, SIGCONT)
-                elif self.singlestep:
-                    ptrace_singlestep(pid, cont_signal)
+
+                elif do_singlestep:
+                    # For each tracee we record whether it was single stepped
+                    # since any of the variables above may change before we
+                    # observe SIGTRAP and thus cannot be relied on
+                    tracee._was_singlestepped = True
+
+                    # We decrement `singlesteps` here so changes made by later
+                    # callbacks will not be affected.
+                    if tracee.singlesteps > 0:
+                        tracee.singlesteps -= 1
+
+                    # Reading `at_syscall` probably reads the tracee's registers
+                    # and/or memory, so we read it here and then flush the
+
+                    # If we're entering or exiting a syscall we must continue
+                    # the tracee with `PTRACE_SYSCALL` in order to observe that.
+                    if at_syscall or tracee.in_syscall:
+                        ptrace_syscall(pid, cont_signal)
+                    else:
+                        ptrace_singlestep(pid, cont_signal)
+
                 else:
+                    tracee._was_singlestepped = False
                     ptrace_syscall(pid, cont_signal)
+
             except OSError as e:
                 raise
                 if e.errno == errno.ESRCH:
@@ -600,7 +653,7 @@ class Engine(object):
                     out.append((func, ret))
             except Exception as e:
                 _log.error('Callback for event "%s" raised an exception: %r' % \
-                           (event, e))
+                                      (event, e))
                 _debug('Traceback:\n' + traceback.format_exc())
 
         for tracer in self.tracers:
@@ -617,12 +670,12 @@ class Engine(object):
 
         return out
 
-    def _run_syscall_callbacks(self, tracee, is_entering):
+    def _run_syscall_callbacks(self, tracee):
         # Collect return value override(s).
         syscall = tracee.syscall
 
         rets = []
-        if is_entering:
+        if tracee.in_syscall:
             rets += self._run_callbacks('syscall',
                                         tracee, syscall, syscall.args)
             rets += self._run_callbacks(syscall.name, tracee, syscall.args)
@@ -637,8 +690,7 @@ class Engine(object):
             bits = tracee.wordsize * 8
             lb = -2**(bits - 1)
             ub = 2**bits - 1
-            if not isinstance(r, (int, long)) or \
-               r < lb or r > ub:
+            if not isinstance(r, (int, long)) or r < lb or r > ub:
                 _log.warn(
                     'callbacks must return an integer [-2^%d;2^%d), ' \
                     '%s returned %r' % (bits - 1, bits, _funcdesc(f), r)
@@ -660,6 +712,9 @@ class Engine(object):
         # Collect signal override(s).
         siginfo = tracee.siginfo
         sigs = self._run_callbacks('signal', tracee, siginfo)
+        sigs += self._run_callbacks(siginfo.signame, tracee, siginfo)
+        # Also call functions named e.g. `on_TRAP`
+        sigs += self._run_callbacks(siginfo.signame[3:], tracee, siginfo)
         if sigs:
             func, signo = sigs[-1]
             if len(sigs) > 1:
@@ -682,3 +737,12 @@ class Engine(object):
             'tracee <PID:%d> is not i its own thread group' % tracee.pid
         tracee.thread_group.remove(tracee)
         del self.tracees[tracee.pid]
+
+    def _detect_personality(self, tracee):
+        cur_pers = personality(tracee)
+        if cur_pers != tracee.personality:
+            old_pers = tracee.personality
+            _debug('personality change %d (%d -> %d)' % \
+                   (tracee.pid, old_pers, cur_pers))
+            tracee.personality = cur_pers
+            self._run_callbacks('personality_change', tracee, old_pers)
