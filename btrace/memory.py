@@ -67,7 +67,6 @@ class Memory(object):
     def __getitem__(self, k):
         if isinstance(k, slice):
             out = []
-            print k
             for addr in xrange(k.start, k.stop, k.step or 1):
                 out.append(self._read(addr))
             return ''.join(out)
