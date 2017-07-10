@@ -2,9 +2,9 @@ import time
 
 from .info import REG_SP, WORDSIZE
 
-_sbit = 1 << (WORDSIZE - 1)
-_smin = -(1 << WORDSIZE)
-_mask = (1 << WORDSIZE) - 1
+_sbit = 1 << (WORDSIZE * 8 - 1)
+_smin = -(1 << WORDSIZE * 8)
+_mask = (1 << WORDSIZE * 8) - 1
 
 class _RW(object):
     def _read(self, (typ, loc)):
@@ -40,6 +40,7 @@ class Syscall(_RW):
         self._tracee = tracee
         self._nr = None
 
+        # Timers.
         self.started_at = None
         self.stopped_at = None
 
@@ -47,7 +48,15 @@ class Syscall(_RW):
         return self._read(self._tracee.syscalls.NR)
 
     def _init(self):
-        self._nr = self._get_nr()
+        # The `execve` syscall may change the personality of a tracee, so we record
+        # the personality at the time of the call.
+        self.personality = self._tracee.personality
+
+        # Setting `nr` as opposed to `_nr` has the side-effect of also setting
+        # `_name`.  Since `execve` may change the personality -- and therefore
+        # syscall numbers -- of a tracee, we need to look up the name now, not
+        # later.
+        self.nr = self._get_nr()
         self.started_at = time.time()
 
     def _fini(self):
@@ -61,11 +70,12 @@ class Syscall(_RW):
     @nr.setter
     def nr(self, val):
         self._nr = val
+        self._name = self._tracee.syscalls.syscall_names[val]
         self._write(self._tracee.syscalls.NR, val)
 
     @property
     def name(self):
-        return self._tracee.syscalls.syscall_names[self.nr]
+        return self._name
 
     @name.setter
     def name(self, val):
