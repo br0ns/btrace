@@ -1,7 +1,9 @@
 CC=gcc
+CFLAGS+=-no-pie
 
 TARGETS=                                            \
   99forks                                           \
+  anti-debug                                        \
   clone-child-exec                                  \
   clone-leader-exits-child-execves                  \
   clone-untraced                                    \
@@ -13,6 +15,7 @@ TARGETS=                                            \
   hello                                             \
   infloop-busy                                      \
   infloop-sleep                                     \
+  int80                                             \
   kill                                              \
   mmap                                              \
   siginfo                                           \
@@ -22,7 +25,6 @@ TARGETS=                                            \
   sigwinch                                          \
   term                                              \
   trap                                              \
-  anti-debug                                        \
 
 TARGETS:=$(patsubst %, %.i386, $(TARGETS)) \
          $(patsubst %, %.amd64, $(TARGETS))
