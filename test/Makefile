@@ -25,6 +25,8 @@ TARGETS=                                            \
   sigwinch                                          \
   term                                              \
   trap                                              \
+  anti-debug                                        \
+  personality
 
 TARGETS:=$(patsubst %, %.i386, $(TARGETS)) \
          $(patsubst %, %.amd64, $(TARGETS))

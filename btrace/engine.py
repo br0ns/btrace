@@ -219,7 +219,7 @@ class Engine(object):
         stop_seen = set()
 
         # `parent_seen` maps children to their "parents".  Here parent refers to
-        # the process that spawned the child, not the childs parent as reported
+        # the process that spawned the child, not the child's parent as reported
         # by `getppid`.
         parent_seen = {}
 
@@ -243,7 +243,7 @@ class Engine(object):
             cflags = clone_flags.pop(parent.pid, 0)
             self._new_tracee(pid, parent, cflags)
 
-        while self.tracees or True:
+        while self.tracees:
             try:
                 pid, status = self._wait()
             except OSError as e:
@@ -264,7 +264,7 @@ class Engine(object):
                 # The child is not a tracee.  That can happen because 1) it was
                 # created with follow mode disabled, and is not meant to be a
                 # tracee, or 2) this is the first time we see the tracee in
-                # which case we expect observe `PTRACE_EVENT_STOP`
+                # which case we expect to observe `PTRACE_EVENT_STOP`
 
                 # According to the `wait(2)` man page `WIFSTOPPED(status)` can
                 # only be true if `wait` was called with `UNTRACED` or if the
@@ -287,7 +287,7 @@ class Engine(object):
             s = os.WSTOPSIG(status)
             e = WPTRACEEVENT(status)
 
-            # When we continue the tracee, this is the signal we should send it
+            # When we continue the tracee, this is the signal we should send it.
             cont_signal = 0
 
             # Why did `wait` return this tracee?
@@ -302,7 +302,7 @@ class Engine(object):
             event_stop   = False
             syscall_stop = False
 
-            # This will be sent if we have event-stop
+            # This will be set if we have event-stop.
             event  = None
 
             # Tracers can return a value on syscall-enter in which case the
@@ -620,7 +620,6 @@ class Engine(object):
                     ptrace_syscall(pid, cont_signal)
 
             except OSError as e:
-                raise
                 if e.errno == errno.ESRCH:
                     # This doesn't happen at the moment (kernel 4.5.0), but it
                     # may in the future.  See the BUGS section in the ptrace man
