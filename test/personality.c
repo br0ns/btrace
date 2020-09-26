@@ -12,6 +12,7 @@ int main(int argc, char *argv[]) {
              MAP_ANONYMOUS | MAP_PRIVATE | MAP_32BIT,
              -1, 0);
   strcpy(txt, hello);
+#ifdef __amd64__
   __asm__(
           "mov $1, %%rbx\n"
           "mov %0, %%rcx\n"
@@ -21,4 +22,15 @@ int main(int argc, char *argv[]) {
           :
           : "p" (txt)
           );
+#else
+  __asm__(
+          "mov $1, %%ebx\n"
+          "mov %0, %%ecx\n"
+          "mov $6, %%edx\n"
+          "mov $4, %%eax\n"
+          "int $0x80\n"
+          :
+          : "p" (txt)
+          );
+#endif
 }

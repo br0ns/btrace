@@ -6,7 +6,7 @@
 #   /usr/include/x86_64-linux-gnu/asm/ptrace-abi.h
 
 ### Requests
-from ..info import MACHINE as _MACH
+from ..info import ARCH as _ARCH
 
 PTRACE_TRACEME               =      0
 PTRACE_PEEKTEXT              =      1
@@ -31,7 +31,7 @@ PTRACE_GETEVENTMSG           = 0x4201
 PTRACE_CONT                  =      7
 PTRACE_SYSCALL               =     24
 PTRACE_SINGLESTEP            =      9
-if _MACH == 'amd64':
+if _ARCH == 'amd64':
     PTRACE_SYSEMU            =     31
     PTRACE_SYSEMU_SINGLESTEP =     32
 PTRACE_LISTEN                = 0x4208

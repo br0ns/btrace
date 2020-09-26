@@ -6,16 +6,16 @@ if sys.platform.startswith('linux'):
 else:
     raise NotImplementedError('Platform not supported')
 
-MACHINE = os.uname()[4]
-if MACHINE in ('i386', 'i686'):
-    MACHINE = 'i386'
+ARCH = os.uname()[4]
+if ARCH in ('i386', 'i686'):
+    ARCH = 'i386'
     WORDSIZE = 4
     REG_PC = 'eip'
     REG_SP = 'esp'
     from .syscalls.linux import i386 as SYSCALLS
 
-elif MACHINE in ('x86_64', 'amd64'):
-    MACHINE = 'amd64'
+elif ARCH in ('x86_64', 'amd64'):
+    ARCH = 'amd64'
     WORDSIZE = 8
     REG_PC = 'rip'
     REG_SP = 'rsp'

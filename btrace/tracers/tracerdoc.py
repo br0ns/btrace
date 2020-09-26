@@ -12,7 +12,6 @@ class TracerDoc(object):
     def on_kill(self, tracee):
         pass
 
-
     def on_stop(self, tracee):
         pass
 

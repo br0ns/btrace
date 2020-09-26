@@ -8,14 +8,14 @@ def _x86_at_syscall(*instrs):
     return at_syscall
 
 if PLATFORM == 'linux':
-    if MACHINE == 'i386':
+    if ARCH == 'i386':
         from .syscalls.linux import i386 as sys
         WORDSIZE = [4]
         SYSCALLS = [sys]
         # `int 0x80`, `sysenter`
         AT_SYSCALL = [_x86_at_syscall('\xcd\x80', '\x0f\x34')]
 
-    if MACHINE == 'amd64':
+    if ARCH == 'amd64':
         from .syscalls.linux import amd64 as sys0
         from .syscalls.linux import amd64_32 as sys1
         WORDSIZE = [8, 4]
@@ -26,7 +26,7 @@ if PLATFORM == 'linux':
                       _x86_at_syscall('\xcd\x80', '\x0f\x34'),
         ]
 
-if MACHINE == 'amd64':
+if ARCH == 'amd64':
     def personality(tracee):
         cs = tracee.regs.cs
         assert cs in (0x23, 0x33), \

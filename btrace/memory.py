@@ -45,12 +45,10 @@ class Memory(object):
     def _write(self, addr, val):
         addr, off = self._addroff(addr)
         val = ord(val)
-        if addr in self._cache:
-            word = self._cache[addr]
-            word &= ~(0xff << off)
-            word |= val << off
-        else:
-            word = val << off
+        self[addr] # force cache saturation
+        word = self._cache[addr]
+        word &= ~(0xff << off)
+        word |= val << off
         self._cache[addr] = word
         self._dirty.add(addr)
 

@@ -1,8 +1,8 @@
 from ctypes import *
-from ..info import MACHINE as _MACH
+from ..info import ARCH as _ARCH
 
 class regs_t(Structure):
-    if _MACH == 'i386':
+    if _ARCH == 'i386':
         _fields_ = (
             ('ebx'     , c_ulong),
             ('ecx'     , c_ulong),
@@ -29,7 +29,7 @@ class regs_t(Structure):
             ('__ss'    , c_ushort),
             )
 
-    if _MACH == 'amd64':
+    if _ARCH == 'amd64':
         _fields_ = (
             ('r15'     , c_ulong),
             ('r14'     , c_ulong),

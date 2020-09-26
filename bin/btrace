@@ -5,7 +5,7 @@ import sys
 from btrace import Engine
 
 if __name__ == '__main__':
-    if sys.argv[1] == '-o' and len(sys.argv) > 3:
+    if  len(sys.argv) > 3 and sys.argv[1] == '-o':
         sys.argv.pop(1)
         logfile = sys.argv.pop(1)
         logging.basicConfig(level=logging.DEBUG, filename=logfile, filemode='w')

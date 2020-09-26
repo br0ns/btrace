@@ -48,8 +48,8 @@ class Syscall(_RW):
         return self._read(self._tracee.syscalls.NR)
 
     def _init(self):
-        # The `execve` syscall may change the personality of a tracee, so we record
-        # the personality at the time of the call.
+        # The `execve` syscall may change the personality of a tracee, so we
+        # record the personality at the time of the call.
         self.personality = self._tracee.personality
 
         # Setting `nr` as opposed to `_nr` has the side-effect of also setting

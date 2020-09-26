@@ -106,6 +106,10 @@ class Engine(object):
 
         self._ptrace_opts = opts
         self._follow = follow
+        # We defer the "birth" event until the first child returns from
+        # `execve`.  Otherwise tracers will see a tracee which is running
+        # Python.
+        self._wait_initial = True
 
     @property
     def follow(self):
@@ -127,6 +131,9 @@ class Engine(object):
             ptrace_setoptions(pid, self._ptrace_opts)
 
     def start(self, path, argv, envp=None):
+        self.path = path
+        self.argv = argv
+        self.envp = envp
         pid = os.fork()
         if pid == 0:
             os.kill(os.getpid(), SIGSTOP)
@@ -198,7 +205,6 @@ class Engine(object):
                 cont_signal = 0
 
             ptrace_cont(pid, cont_signal)
-            continue
 
         # For a child to become a tracee two things must happen: 1)
         # `PTRACE_EVENT_STOP` is observed in the child and 2)
@@ -303,13 +309,13 @@ class Engine(object):
             syscall_stop = False
 
             # This will be set if we have event-stop.
-            event  = None
+            event = None
 
             # Tracers can return a value on syscall-enter in which case the
             # syscall is "emulated"
             # XXX: For some reason I couldn't get ptrace_sysemu to work, so I'm
             # XXX: using User-Mode-Linux's trick and replacing it by a syscall
-            # XXX: to getpid instead.  See code further down.
+            # XXX: to `getpid` instead.  See code further down.
             # XXX: Link to UML's SYSEMU patches: http://sysemu.sourceforge.net/
             sysemu = False
 
@@ -412,7 +418,7 @@ class Engine(object):
 
             # Trigger single step callbacks.  We do not reset
             # `_was_singlestepped` here because we need it to be set in order to
-            # supress callbacks for `SIGTRAP`.
+            # suppress callbacks for `SIGTRAP`.
             if tracee._was_singlestepped:
                 _debug('step')
                 self._run_callbacks('step', tracee)
@@ -489,24 +495,30 @@ class Engine(object):
                         # Finalize syscall object, i.e. stop the timer.
                         syscall._fini()
 
-                        # Set syscall number and return value if the syscall was
-                        # "emulated", i.e. `getpid`.
-                        if syscall.emulated:
-                            syscall.nr = syscall.emu_nr
-                            syscall.retval = syscall.emu_retval
+                        # This is the initial tracee returning from `execve`
+                        if self._wait_initial:
+                            self._wait_initial = False
+                            self._run_callbacks('birth', tracee)
 
-                        retval = self._run_syscall_callbacks(tracee)
+                        else:
+                            # Set syscall number and return value if the syscall
+                            # was "emulated", i.e. `getpid`.
+                            if syscall.emulated:
+                                syscall.nr = syscall.emu_nr
+                                syscall.retval = syscall.emu_retval
 
-                        if retval != None:
-                            _debug('overriding syscall %d:%s -> 0x%x' % \
-                                   (syscall.nr, syscall.name, retval))
+                            retval = self._run_syscall_callbacks(tracee)
 
-                            syscall.retval = retval
+                            if retval != None:
+                                _debug('overriding syscall %d:%s -> 0x%x' % \
+                                       (syscall.nr, syscall.name, retval))
 
-                        # The `emulated` flag is reset here, after the callbacks
-                        # have run, so they can see whether the syscall was
-                        # emulated or not.
-                        syscall.emulated = False
+                                syscall.retval = retval
+
+                            # The `emulated` flag is reset here, after the
+                            # callbacks have run, so they can see whether the
+                            # syscall was emulated or not.
+                            syscall.emulated = False
 
                     else:
                         _debug('ignoring syscall-exit due to restart')
@@ -514,7 +526,7 @@ class Engine(object):
             # Run callbacks for signals and single stepping.
             elif signal_stop:
                 # A single stepped tracee will signal-stop with `SIGTRAP` when
-                # executing the next instruction, so we need to supress that
+                # executing the next instruction, so we need to suppress that
                 # signal.  Otherwise run callbacks and deliver signals as usual.
                 if siginfo.signo == SIGTRAP and tracee._was_singlestepped:
                     cont_signal = 0
@@ -605,9 +617,6 @@ class Engine(object):
                     if tracee.singlesteps > 0:
                         tracee.singlesteps -= 1
 
-                    # Reading `at_syscall` probably reads the tracee's registers
-                    # and/or memory, so we read it here and then flush the
-
                     # If we're entering or exiting a syscall we must continue
                     # the tracee with `PTRACE_SYSCALL` in order to observe that.
                     if at_syscall or tracee.in_syscall:
@@ -629,6 +638,8 @@ class Engine(object):
                 else:
                     raise
 
+        self._run_callbacks('finish')
+
     def _wait(self):
         while True:
             try:
@@ -641,6 +652,10 @@ class Engine(object):
                 raise
 
     def _run_callbacks(self, event, *args, **kwargs):
+        # Defer callback until after `execve` if this is the initial tracee
+        if self._wait_initial:
+            return []
+
         out = []
 
         def run(func):
@@ -664,7 +679,7 @@ class Engine(object):
 
         for func, flags in self._callbacks[event].items():
             if flags.get('once'):
-                del callbacks[func]
+                del self._callbacks[event][func]
             run(func)
 
         return out
@@ -676,13 +691,13 @@ class Engine(object):
         rets = []
         if tracee.in_syscall:
             rets += self._run_callbacks('syscall',
-                                        tracee, syscall, syscall.args)
-            rets += self._run_callbacks(syscall.name, tracee, syscall.args)
+                                        tracee, syscall)
+            rets += self._run_callbacks(syscall.name, tracee, syscall)
         else:
             rets += self._run_callbacks('syscall_return',
-                                        tracee, syscall, syscall.retval)
+                                        tracee, syscall)
             rets += self._run_callbacks(syscall.name + '_return',
-                                        tracee, syscall.retval)
+                                        tracee, syscall)
 
         rets_ = []
         for f, r in rets:

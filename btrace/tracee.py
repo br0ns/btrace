@@ -2,7 +2,7 @@ from .registers import Registers
 from .memory import Memory
 from .syscall import Syscall
 from .siginfo import Siginfo
-from .personality import WORDSIZE, SYSCALLS, personality
+from .personality import WORDSIZE, SYSCALLS, AT_SYSCALL, personality
 
 from .thread_group import ThreadGroup
 from .ptrace import ptrace_interrupt
@@ -10,13 +10,18 @@ from .ptrace import ptrace_interrupt
 CLONE_PARENT = 0x00008000
 CLONE_THREAD = 0x00010000
 
-class Tracee:
+class Tracee(object):
     def __init__(self, pid, parent=None, clone_flags=0):
         self.pid = pid
 
         self.in_syscall = False
         self.is_running = True
         self.is_alive   = True
+
+        # Single step a set number of times
+        self.singlesteps = 0
+        # Keep single stepping
+        self.singlestep = False
 
         # Set parent and parent pid
         if clone_flags & CLONE_THREAD or clone_flags & CLONE_PARENT:
@@ -39,11 +44,10 @@ class Tracee:
         self.syscall = Syscall(self)
         self.siginfo = Siginfo(self)
 
-        # XXX: Implement breakpoints
-        self.breakpoints = {}
-
+        # "Internal" state
         self._waiting_for_interrupt = False
         self._do_detach = False
+        self._was_singlestepped = False
 
         # We set the personality last as we may need to read from registers
         # and/or memory.
@@ -60,6 +64,10 @@ class Tracee:
     def tid(self):
         '''Alias for `self.pid`.'''
         return self.pid
+
+    @property
+    def at_syscall(self):
+        return AT_SYSCALL[self.personality](self)
 
     @property
     def wordsize(self):
